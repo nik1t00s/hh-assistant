@@ -92,8 +92,6 @@ class DesktopUI:
             variable.trace_add("write", lambda *_: self.update_summary())
         self.update_summary()
         self.show("Обзор")
-        for row in reversed(app._read_history_rows()):
-            self.add_result(row, refresh=False)
         self.refresh_results()
         self.root.bind("<Configure>", self._resize, add="+")
 
@@ -237,7 +235,7 @@ class DesktopUI:
                      values=("Подходящие", "Все", "На проверку", "Отклонённые")).pack(side="left", padx=(10, 0))
         self.query.trace_add("write", lambda *_: self.refresh_results())
         self.filter.trace_add("write", lambda *_: self.refresh_results())
-        label(body, "Поиск по должности или компании · история и новые результаты", 9, MUTED).pack(anchor="w", pady=(0, 12))
+        label(body, "Текущий поиск · прошлые результаты доступны в истории", 9, MUTED).pack(anchor="w", pady=(0, 12))
         content = tk.Frame(body, bg=BG)
         content.pack(fill="both", expand=True)
         content.columnconfigure(0, weight=1)
@@ -486,6 +484,7 @@ class DesktopUI:
                 a.on_select_result(None)
         else:
             self.empty.configure(text="Ничего не найдено\n\nПопробуй другой запрос или фильтр." if a.result_data else
+                                 "Ищем новые вакансии\n\nРезультаты появятся здесь\nпо мере проверки." if self.running else
                                  "Пока здесь тихо\n\nНачни поиск — вакансии\nпоявятся в этом списке.")
             self.empty.place(relx=.5, rely=.5, anchor="center")
             a.tree.selection_remove(*a.tree.selection())
@@ -512,12 +511,20 @@ class DesktopUI:
         self.running = running
         self.app.btn_start.configure(text="Поиск идёт…" if running else "Начать поиск  →")
         if running:
+            # All results have already been persisted by Worker. Reset only the
+            # session view, including rows detached by filters, never the history.
+            for iid in tuple(self.app.result_data):
+                self.app.tree.delete(iid)
+            self.app.result_data.clear()
+            self.query.set("")
+            self.filter.set("Подходящие")
             self.app.progress.pack(fill="x", pady=(0, 9), before=self.app.lbl_status)
             self.set_stats(0, 0, 0)
             self.show("Обзор")
         else:
             self.app.progress.pack_forget()
             self.app.lbl_status.configure(text="Поиск завершён · подробности в журнале")
+        self.refresh_results()
 
     def _resize(self, event):
         if event.widget is not self.root:

@@ -89,6 +89,34 @@ class DesktopTests(unittest.TestCase):
         self.app.var_resume_only.set(False)
         self.assertIn("выбранным источникам", self.app.ui.mode.cget("text"))
 
+    def test_startup_does_not_load_history_into_current_results(self):
+        main.App._read_history_rows.assert_not_called()
+        self.assertEqual(self.app.result_data, {})
+        self.assertEqual(self.app.tree.get_children(), ())
+
+    def test_new_search_clears_hidden_rows_but_preserves_history(self):
+        ui = self.app.ui
+        row = self.row("Previous match")
+        with patch.object(main, "RESULTS_DIR", self.temp.name):
+            writer = main.ResultWriter("test")
+            writer.write({**row, "id": "test-id"}, 80, "MATCH", "данные", "общее", "Test reason", True)
+        history = Path(writer.csv_path).read_bytes()
+        ui.add_result(row)
+        ui.add_result(self.row("Hidden rejection", "REJECT", False))
+        old_ids = tuple(self.app.result_data)
+        ui.query.set("Previous")
+        with patch.object(main, "Worker", return_value=Mock()):
+            self.app.on_start()
+        self.assertEqual(self.app.result_data, {})
+        self.assertTrue(all(not self.app.tree.exists(iid) for iid in old_ids))
+        self.assertEqual(ui.query.get(), "")
+        self.assertEqual(self.app.txt_reason.get("1.0", "end").strip(), "")
+        self.assertTrue(ui.open_button.instate(["disabled"]))
+        self.assertEqual(Path(writer.csv_path).read_bytes(), history)
+        ui.add_result(self.row("New match"))
+        self.assertEqual(len(self.app.tree.get_children()), 1)
+        self.assertEqual(next(iter(self.app.result_data.values()))["name"], "New match")
+
 
 if __name__ == "__main__":
     unittest.main()

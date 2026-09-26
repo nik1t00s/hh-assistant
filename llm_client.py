@@ -1,4 +1,5 @@
 """Shared LM Studio transport for both applications."""
+import json
 import re
 import requests
 

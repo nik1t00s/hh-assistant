@@ -8,7 +8,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import main
 import resume_tailor
@@ -224,6 +224,37 @@ class ResumeTests(unittest.TestCase):
 
 
 class LLMTests(unittest.TestCase):
+    @staticmethod
+    def streaming_response(payload):
+        text = json.dumps(payload, ensure_ascii=False)
+        lines = [b": keepalive", b"data: invalid-json", b'data: {"choices":[]}']
+        for offset in range(0, len(text), 7):
+            chunk = {"choices": [{"delta": {"content": text[offset:offset + 7]}}]}
+            lines.append(("data: " + json.dumps(chunk, ensure_ascii=False)).encode("utf-8"))
+        lines.extend([b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}', b"data: [DONE]"])
+        response = MagicMock(status_code=200)
+        response.__enter__.return_value = response
+        response.iter_lines.return_value = iter(lines)
+        return response
+
+    def test_evaluation_reads_real_stream_parser(self):
+        payload = {"verdict": "MATCH", "score": 80, "direction": "данные",
+                   "reason": "Подходящие задачи и обучение в команде"}
+        response = self.streaming_response(payload)
+        client = main.LLMClient("http://example.invalid/v1", "test", lambda _: None)
+        with patch("llm_client.requests.post", return_value=response):
+            result = client.evaluate("Synthetic profile", "Synthetic vacancy")
+        self.assertEqual(result[:4], ("MATCH", 80, "данные", payload["reason"]))
+        self.assertEqual(client.last_finish, "stop")
+        response.__exit__.assert_called_once()
+
+    def test_resume_reads_same_stream_parser(self):
+        payload = {"target_title": "Специалист", "summary": "Учебный опыт",
+                   "skills": {}, "experience": {}, "additional": "Готов учиться"}
+        client = resume_tailor.LLMClient("http://example.invalid/v1", "test", lambda _: None)
+        with patch("llm_client.requests.post", return_value=self.streaming_response(payload)):
+            self.assertEqual(client.tailor({}, "Synthetic profile", "Synthetic vacancy"), payload)
+
     def test_bad_verdict_is_not_a_success(self):
         client = main.LLMClient("http://example.invalid/v1", "test", lambda _: None)
         content = json.dumps({"verdict": "INVALID", "score": 90, "reason": "Detailed reason for testing"})

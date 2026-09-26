@@ -659,7 +659,8 @@ class LLMClient(StreamingLLMClient):
                     and isinstance(score, (int, float)) and not isinstance(score, bool)
                     and 0 <= score <= 100
                     and (data.get("direction") is None or
-                         isinstance(data["direction"], str) and data["direction"] in cls._DIRECTIONS)
+                         isinstance(data["direction"], str) and
+                         data["direction"].strip().lower() in cls._DIRECTIONS | {"null"})
                     and cls._reason_is_meaningful(content))
         except (ValueError, TypeError, AttributeError):
             return False

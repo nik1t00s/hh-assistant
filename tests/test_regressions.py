@@ -255,6 +255,15 @@ class LLMTests(unittest.TestCase):
         with patch("llm_client.requests.post", return_value=self.streaming_response(payload)):
             self.assertEqual(client.tailor({}, "Synthetic profile", "Synthetic vacancy"), payload)
 
+    def test_string_null_direction_is_normalized(self):
+        payload = {"verdict": "REJECT", "score": 0, "direction": "null",
+                   "reason": "Вакансия не соответствует выбранной сфере работы"}
+        client = main.LLMClient("http://example.invalid/v1", "test", lambda _: None)
+        with patch("llm_client.requests.post", return_value=self.streaming_response(payload)) as request:
+            verdict, score, direction, reason, resume = client.evaluate("profile", "vacancy")
+        request.assert_called_once()
+        self.assertEqual((verdict, score, direction), ("REJECT", 0, None))
+
     def test_bad_verdict_is_not_a_success(self):
         client = main.LLMClient("http://example.invalid/v1", "test", lambda _: None)
         content = json.dumps({"verdict": "INVALID", "score": 90, "reason": "Detailed reason for testing"})

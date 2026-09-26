@@ -1,0 +1,15 @@
+{
+  "role_ids": ["121"],
+  "queries": "стажер\njunior",
+  "area": "Москва",
+  "experience": "Любой",
+  "recs_enabled": false,
+  "hh_resume_only": false,
+  "triage": false,
+  "pages": 2,
+  "min_delay": 5.0,
+  "max_delay": 10.0,
+  "lm_url": "http://localhost:1234/v1",
+  "lm_model": "",
+  "lm_model_fast": ""
+}

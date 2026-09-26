@@ -1,0 +1,16 @@
+# Only distributable source files belong in this personal project.
+/*
+!/.gitignore
+!/README.md
+!/requirements.txt
+!/main.py
+!/resume_tailor.py
+!/storage.py
+!/settings.py
+!/llm_client.py
+!/vacancy_rules.py
+!/tests/
+!/examples/
+!/CHANGELOG.md
+__pycache__/
+*.py[cod]

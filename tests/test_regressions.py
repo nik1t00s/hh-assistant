@@ -176,6 +176,7 @@ class VaultTests(unittest.TestCase):
             try:
                 with patch.object(main, "CONFIG_PATH", str(path)), \
                      patch.object(main, "PROFILE_PATH", str(profile)), \
+                     patch.object(main.App, "_read_history_rows", return_value=[]), \
                      patch("settings._keyring", side_effect=settings.CredentialDependencyError("keyring missing")):
                     app = main.App(root)
                     root.update_idletasks()

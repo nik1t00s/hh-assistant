@@ -1,0 +1,94 @@
+import os
+import tempfile
+from pathlib import Path
+from unittest.mock import patch, Mock
+import unittest
+import tkinter as tk
+
+import main
+
+
+@unittest.skipUnless(os.name == "nt", "Windows desktop UI")
+class DesktopTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        profile = Path(self.temp.name) / "profile.txt"
+        profile.write_text("Synthetic test profile", encoding="utf-8")
+        self.root = tk.Tk()
+        self.root.withdraw()
+        cfg = dict(main.DEFAULT_CONFIG, hh_cookie="synthetic-secret", superjob_cookie="test-secret",
+                   lm_model="test-model", telegram_channels="test_channel")
+        self.patches = [patch.object(main, "load_config", return_value=cfg),
+                        patch.object(main, "PROFILE_PATH", str(profile)),
+                        patch.object(main.App, "_read_history_rows", return_value=[]),
+                        patch.object(main, "save_config")]
+        for item in self.patches:
+            item.start()
+        self.app = main.App(self.root)
+
+    def tearDown(self):
+        self.root.destroy()
+        for item in reversed(self.patches):
+            item.stop()
+        self.temp.cleanup()
+
+    @staticmethod
+    def row(name, verdict="MATCH", suitable=True):
+        return {"name": name, "employer": "Test company", "score": 80,
+                "verdict": verdict, "suitable": suitable, "reason": "Test explanation",
+                "salary": "not listed", "direction": "данные", "resume": "общее",
+                "url": "https://example.com"}
+
+    def test_settings_roundtrip_including_hidden_cookies(self):
+        before = dict(self.app.cfg)
+        after = self.app._collect_config()
+        for key in before:
+            with self.subTest(key=key):
+                self.assertEqual(after[key], before[key])
+        self.assertEqual(self.app.txt_cookie.cget("state"), "disabled")
+        self.assertEqual(self.app.txt_cookie.tag_cget("secret", "elide"), "1")
+
+    def test_filters_do_not_lose_rows_and_clear_stale_details(self):
+        ui = self.app.ui
+        ui.add_result(self.row("Analyst"))
+        ui.add_result(self.row("Other role", "REJECT", False))
+        ui.add_result(self.row("Incomplete", "", None))
+        self.assertEqual(len(self.app.tree.get_children()), 1)
+        ui.filter.set("Все")
+        self.assertEqual(len(self.app.tree.get_children()), 3)
+        ui.query.set("ANALYST")
+        self.assertEqual(len(self.app.tree.get_children()), 1)
+        self.assertEqual(ui.detail_title.cget("text"), "Analyst")
+        ui.query.set("no match")
+        self.assertEqual(len(self.app.tree.get_children()), 0)
+        self.assertTrue(ui.open_button.instate(["disabled"]))
+        self.assertEqual(self.app.txt_reason.get("1.0", "end").strip(), "")
+        ui.query.set("")
+        ui.filter.set("На проверку")
+        self.assertEqual(len(self.app.tree.get_children()), 1)
+        ui.filter.set("Все")
+        self.assertEqual(len(self.app.result_data), 3)
+
+    def test_worker_events_update_counters_and_buttons(self):
+        with patch.object(main, "Worker", return_value=Mock()) as worker:
+            self.app.on_start()
+            worker.return_value.start.assert_called_once()
+        self.assertTrue(self.app.btn_start.instate(["disabled"]))
+        self.app.queue.put(("result", self.row("Analyst")))
+        self.app.queue.put(("stats", (8, 5, 3)))
+        self.app.queue.put(("done", None))
+        self.app._poll_queue()
+        self.assertEqual([number.cget("text") for number in self.app.ui.metrics], ["5", "3", "8"])
+        self.assertTrue(self.app.btn_stop.instate(["disabled"]))
+        self.assertFalse(self.app.btn_start.instate(["disabled"]))
+
+    def test_source_mode_summary_matches_settings(self):
+        self.app.var_recs.set(True)
+        self.app.var_resume_only.set(True)
+        self.assertIn("только рекомендации HH", self.app.ui.mode.cget("text"))
+        self.app.var_resume_only.set(False)
+        self.assertIn("выбранным источникам", self.app.ui.mode.cget("text"))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1457,348 +1457,8 @@ class App:
     # -- построение интерфейса ------------------------------------------
 
     def _build_ui(self):
-        pad = {"padx": 6, "pady": 4}
-
-        self.nb = ttk.Notebook(self.root)
-        self.nb.pack(fill="both", expand=True, padx=8, pady=(8, 4))
-
-        # ---------- вкладка «Поиск и фильтры» ----------
-        search = ttk.Frame(self.nb)
-        self.nb.add(search, text="  Поиск и фильтры  ")
-
-        ttk.Label(search, text="Категории\nвакансий HH:",
-                  justify="left").grid(row=0, column=0, sticky="nw", **pad)
-        roles_row = ttk.Frame(search)
-        roles_row.grid(row=0, column=1, columnspan=3, sticky="w", **pad)
-        self.lbl_roles = ttk.Label(roles_row, text="")
-        self.lbl_roles.pack(side="left")
-        ttk.Button(roles_row, text="Выбрать…",
-                   command=self.on_pick_roles).pack(side="left", padx=10)
-        self._update_roles_label()
-
-        ttk.Label(search, text="Доп. запросы\n(по одному\nна строку):",
-                  justify="left").grid(row=1, column=0, sticky="nw", **pad)
-        self.txt_queries = tk.Text(search, height=4, width=44, wrap="none")
-        self.txt_queries.insert("1.0", self.cfg["queries"])
-        self.txt_queries.grid(row=1, column=1, columnspan=3, sticky="we", **pad)
-
-        ttk.Label(search, text="Регион:").grid(row=2, column=0, sticky="w", **pad)
-        self.var_area = tk.StringVar(value=self.cfg["area"])
-        ttk.Combobox(search, textvariable=self.var_area, width=20,
-                     values=list(AREAS), state="readonly").grid(
-            row=2, column=1, sticky="w", **pad)
-
-        ttk.Label(search, text="Опыт:").grid(row=2, column=2, sticky="e", **pad)
-        self.var_exp = tk.StringVar(value=self.cfg["experience"])
-        ttk.Combobox(search, textvariable=self.var_exp, width=16,
-                     values=list(EXPERIENCE), state="readonly").grid(
-            row=2, column=3, sticky="w", **pad)
-
-        exp_row = ttk.Frame(search)
-        exp_row.grid(row=3, column=0, sticky="w", **pad)
-        ttk.Label(exp_row, text="Отсев по опыту:").pack(side="left")
-        self.var_exp_filter = tk.StringVar(value=self.cfg["exp_filter"])
-        ttk.Combobox(exp_row, textvariable=self.var_exp_filter, width=17,
-                     values=list(EXP_FILTER), state="readonly").pack(
-            side="left", padx=4)
-        self.var_remote = tk.BooleanVar(value=self.cfg["remote_only"])
-        ttk.Checkbutton(search, text="Только удалённая работа",
-                        variable=self.var_remote).grid(
-            row=3, column=1, sticky="w", **pad)
-        self.var_salary = tk.BooleanVar(value=self.cfg["only_with_salary"])
-        ttk.Checkbutton(search, text="Только с зарплатой",
-                        variable=self.var_salary).grid(
-            row=3, column=2, sticky="w", **pad)
-        self.var_remote_extra = tk.BooleanVar(value=self.cfg["remote_extra"])
-        ttk.Checkbutton(search, text="+ удалёнка по всей России",
-                        variable=self.var_remote_extra).grid(
-            row=3, column=3, sticky="w", **pad)
-
-        self.var_split = tk.BooleanVar(value=self.cfg["split_roles"])
-        ttk.Checkbutton(
-            search, text="Каждая категория отдельным проходом "
-                         "(максимальный охват: лимит HH — 2000 вакансий "
-                         "на один запрос)",
-            variable=self.var_split).grid(
-            row=4, column=0, columnspan=4, sticky="w", **pad)
-
-        self.var_habr = tk.BooleanVar(value=self.cfg["habr_enabled"])
-        ttk.Checkbutton(
-            search, text="Также искать на career.habr.com "
-                         "(отдельная база, часто без дублей с hh.ru; "
-                         "использует те же доп. запросы выше)",
-            variable=self.var_habr).grid(
-            row=5, column=0, columnspan=4, sticky="w", **pad)
-
-        ttk.Label(search, text="Страниц на источник (по ~100 шт.):").grid(
-            row=6, column=0, sticky="w", **pad)
-        self.var_pages = tk.IntVar(value=self.cfg["pages"])
-        ttk.Spinbox(search, from_=1, to=40, textvariable=self.var_pages,
-                    width=5).grid(row=6, column=1, sticky="w", **pad)
-
-        ttk.Label(search, text="Пауза между запросами, с:").grid(
-            row=6, column=2, sticky="e", **pad)
-        delays = ttk.Frame(search)
-        delays.grid(row=6, column=3, sticky="w", **pad)
-        self.var_dmin = tk.DoubleVar(value=self.cfg["min_delay"])
-        self.var_dmax = tk.DoubleVar(value=self.cfg["max_delay"])
-        ttk.Spinbox(delays, from_=1, to=60, increment=0.5, width=5,
-                    textvariable=self.var_dmin).pack(side="left")
-        ttk.Label(delays, text=" – ").pack(side="left")
-        ttk.Spinbox(delays, from_=1, to=120, increment=0.5, width=5,
-                    textvariable=self.var_dmax).pack(side="left")
-
-        ttk.Separator(search).grid(row=7, column=0, columnspan=4,
-                                   sticky="we", padx=6, pady=8)
-
-        ttk.Label(search, text="Стоп-слова\nв названии:",
-                  justify="left").grid(row=8, column=0, sticky="nw", **pad)
-        self.txt_exclude = tk.Text(search, height=2, width=44, wrap="word")
-        self.txt_exclude.insert("1.0", self.cfg["exclude_words"])
-        self.txt_exclude.grid(row=8, column=1, columnspan=3, sticky="we", **pad)
-
-        ttk.Label(search, text="Целевые слова\n(мимо отсева):",
-                  justify="left").grid(row=9, column=0, sticky="nw", **pad)
-        self.txt_include = tk.Text(search, height=2, width=44, wrap="word")
-        self.txt_include.insert("1.0", self.cfg["include_words"])
-        self.txt_include.grid(row=9, column=1, columnspan=3, sticky="we", **pad)
-
-        ttk.Label(search, text="Компании-\nисключения:",
-                  justify="left").grid(row=10, column=0, sticky="nw", **pad)
-        self.txt_companies = tk.Text(search, height=2, width=44, wrap="word")
-        self.txt_companies.insert("1.0", self.cfg["exclude_companies"])
-        self.txt_companies.grid(row=10, column=1, columnspan=3,
-                                sticky="we", **pad)
-
-        self.var_superjob = tk.BooleanVar(value=self.cfg["superjob_enabled"])
-        ttk.Checkbutton(
-            search, text="Также искать на superjob.ru (использует те же "
-                         "доп. запросы выше; страница листается только "
-                         "первая на каждый запрос — SuperJob не отдаёт "
-                         "глубокую пагинацию так же просто, как hh.ru)",
-            variable=self.var_superjob).grid(
-            row=11, column=0, columnspan=4, sticky="w", **pad)
-
-        self.var_telegram = tk.BooleanVar(value=self.cfg["telegram_enabled"])
-        ttk.Checkbutton(
-            search, text="Также смотреть публичные Telegram-каналы ниже "
-                         "(без входа в аккаунт — читаются как обычная "
-                         "веб-страница t.me/s/канал)",
-            variable=self.var_telegram).grid(
-            row=12, column=0, columnspan=4, sticky="w", **pad)
-        ttk.Label(search, text="Каналы\n(по одному на строку,\nбез t.me/):",
-                  justify="left").grid(row=13, column=0, sticky="nw", **pad)
-        self.txt_telegram = tk.Text(search, height=4, width=44, wrap="none")
-        self.txt_telegram.insert("1.0", self.cfg["telegram_channels"])
-        self.txt_telegram.grid(row=13, column=1, columnspan=3,
-                               sticky="we", **pad)
-
-        search.columnconfigure(1, weight=1)
-
-        # ---------- вкладка «Нейросеть» ----------
-        lm = ttk.Frame(self.nb)
-        self.nb.add(lm, text="  Нейросеть  ")
-
-        ttk.Label(lm, text="Адрес сервера LM Studio:").grid(
-            row=0, column=0, sticky="w", **pad)
-        self.var_lm_url = tk.StringVar(value=self.cfg["lm_url"])
-        ttk.Entry(lm, textvariable=self.var_lm_url, width=36).grid(
-            row=0, column=1, sticky="we", **pad)
-        ttk.Button(lm, text="Проверить связь", command=self.on_check_lm).grid(
-            row=0, column=2, **pad)
-
-        ttk.Label(lm, text="Модель (имя или подстрока, напр. «gemma»):").grid(
-            row=1, column=0, sticky="w", **pad)
-        self.var_model = tk.StringVar(value=self.cfg["lm_model"])
-        self.cmb_model = ttk.Combobox(lm, textvariable=self.var_model,
-                                      width=44)
-        self.cmb_model.grid(row=1, column=1, columnspan=2, sticky="we", **pad)
-
-        ttk.Label(lm, text="Модель для отсева заголовков "
-                           "(быстрая; пусто — та же):").grid(
-            row=2, column=0, sticky="w", **pad)
-        self.var_model_fast = tk.StringVar(value=self.cfg["lm_model_fast"])
-        self.cmb_model_fast = ttk.Combobox(
-            lm, textvariable=self.var_model_fast, width=44)
-        self.cmb_model_fast.grid(row=2, column=1, columnspan=2,
-                                 sticky="we", **pad)
-
-        self.var_triage = tk.BooleanVar(value=self.cfg["triage"])
-        ttk.Checkbutton(
-            lm, text="Быстрый отсев по заголовкам перед полной проверкой "
-                     "(меньше запросов к hh.ru, быстрее)",
-            variable=self.var_triage).grid(
-            row=4, column=0, columnspan=3, sticky="w", **pad)
-
-        ttk.Label(
-            lm, foreground="#666", justify="left", wraplength=760,
-            text="Совет: тяжёлую модель (gemma) ставьте на оценку, быструю "
-                 "(qwen3-vl / qwen3-4b) — на отсев заголовков; обе должны "
-                 "быть загружены в LM Studio. Таймаута на весь ответ нет: "
-                 "пока модель отвечает (в том числе «размышляет»), "
-                 "приложение ждёт. Ошибка — только если модель молчит "
-                 f"дольше {LLMClient.STALL_TIMEOUT // 60} минут. "
-                 "У модели оценки поставьте Context Length не меньше 8192 "
-                 "(настройка загрузки модели в LM Studio), иначе профиль + "
-                 "вакансия не влезут и ответ будет пустым.").grid(
-            row=5, column=0, columnspan=3, sticky="w", padx=6, pady=12)
-        lm.columnconfigure(1, weight=1)
-
-        # ---------- вкладка «Аккаунт HH» ----------
-        acc = ttk.Frame(self.nb)
-        self.nb.add(acc, text="  Аккаунт HH  ")
-
-        self.var_recs = tk.BooleanVar(value=self.cfg["recs_enabled"])
-        ttk.Checkbutton(
-            acc, text="Читать «Подходящие вакансии» — рекомендации HH "
-                      "под моё резюме (нужны cookie)",
-            variable=self.var_recs).grid(
-            row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(10, 4))
-
-        self.var_resume_only = tk.BooleanVar(
-            value=self.cfg.get("hh_resume_only", False))
-        ttk.Checkbutton(
-            acc, text="На hh.ru смотреть ТОЛЬКО рекомендации под резюме "
-                      "(без категорий и запросов), Хабр Карьера тоже "
-                      "пропускается. Поиск в любом случае не "
-                      "останавливается сам — идёт кругами, пока не "
-                      "нажата «Стоп»; этот флажок только сужает "
-                      "источники",
-            variable=self.var_resume_only).grid(
-            row=1, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 8))
-
-        ttk.Label(acc, text="Ссылка на резюме\n(или его hash):",
-                  justify="left").grid(row=2, column=0, sticky="nw", **pad)
-        self.var_resume = tk.StringVar(value=self.cfg["resume_hash"])
-        ttk.Entry(acc, textvariable=self.var_resume, width=70).grid(
-            row=2, column=1, sticky="we", **pad)
-
-        ttk.Label(acc, text="Cookie:", justify="left").grid(
-            row=3, column=0, sticky="nw", **pad)
-        self.txt_cookie = tk.Text(acc, height=4, width=70, wrap="char")
-        self.txt_cookie.insert("1.0", self.cfg["hh_cookie"])
-        self.txt_cookie.grid(row=3, column=1, sticky="we", **pad)
-
-        ttk.Label(
-            acc, foreground="#666", justify="left", wraplength=800,
-            text="Как настроить:\n"
-                 "1. Ссылка на резюме: hh.ru → «Моё резюме» → откройте "
-                 "нужное резюме и скопируйте адрес страницы сюда целиком.\n"
-                 "2. Cookie: на любой странице hh.ru нажмите F12 → вкладка "
-                 "Network → обновите страницу (F5) → кликните самый первый "
-                 "запрос → справа в Request Headers найдите строку Cookie "
-                 "и скопируйте её значение сюда целиком.\n\n"
-                 "Безопасность: приложение ТОЛЬКО читает страницу "
-                 "рекомендаций — не откликается, не пишет сообщения и "
-                 "ничего не меняет в аккаунте. Темп тот же, что и у "
-                 "остальных источников (паузы в несколько секунд). "
-                 "Cookie сохраняются в системном хранилище учётных данных. Не пересылайте "
-                 "cookies никому. Если cookie устареют, источник просто "
-                 "пропустится с пометкой в журнале.\n"
-                 "Рекомендация: запускайте прогон не чаще 1–2 раз в день.").grid(
-            row=4, column=0, columnspan=2, sticky="w", padx=6, pady=12)
-        acc.columnconfigure(1, weight=1)
-
-        # ---------- вкладка «Аккаунт SuperJob» ----------
-        accsj = ttk.Frame(self.nb)
-        self.nb.add(accsj, text="  Аккаунт SuperJob  ")
-
-        ttk.Label(accsj, text="Ссылка на резюме:",
-                  justify="left").grid(row=0, column=0, sticky="nw", **pad)
-        self.var_sj_resume = tk.StringVar(
-            value=self.cfg.get("superjob_resume_url", ""))
-        ttk.Entry(accsj, textvariable=self.var_sj_resume, width=70).grid(
-            row=0, column=1, sticky="we", **pad)
-
-        ttk.Label(accsj, text="Cookie:", justify="left").grid(
-            row=1, column=0, sticky="nw", **pad)
-        self.txt_sj_cookie = tk.Text(accsj, height=4, width=70, wrap="char")
-        self.txt_sj_cookie.insert("1.0", self.cfg.get("superjob_cookie", ""))
-        self.txt_sj_cookie.grid(row=1, column=1, sticky="we", **pad)
-
-        ttk.Label(
-            accsj, foreground="#666", justify="left", wraplength=800,
-            text="Как настроить: так же, как на вкладке «Аккаунт HH» — "
-                 "F12 → Network → обновите страницу → первый запрос → "
-                 "Request Headers → Cookie, скопировать целиком.\n\n"
-                 "Обычный поиск читает первую страницу каждого запроса. "
-                 "С cookies также читается блок рекомендаций на главной. "
-                 "Ссылка на резюме пока не участвует в запросах. "
-                 "Cookies сохраняются в системном хранилище.").grid(
-            row=2, column=0, columnspan=2, sticky="w", padx=6, pady=12)
-        accsj.columnconfigure(1, weight=1)
-
-        # ---------- вкладка «Результаты» ----------
-        res = ttk.Frame(self.nb)
-        self.nb.add(res, text="  Результаты  ")
-
-        history_row = ttk.Frame(res)
-        history_row.pack(fill="x", padx=4, pady=(4, 0))
-        ttk.Button(history_row, text="История…",
-                   command=self.on_open_history).pack(side="right")
-
-        table_frame = ttk.Frame(res)
-        table_frame.pack(fill="both", expand=True, padx=4, pady=4)
-        cols = ("score", "verdict", "direction", "resume", "name",
-                "employer", "salary")
-        self.tree = ttk.Treeview(table_frame, columns=cols, show="headings")
-        for col, title, width in [
-            ("score", "Балл", 60), ("verdict", "Вердикт", 90),
-            ("direction", "Направл.", 60), ("resume", "Резюме", 60),
-            ("name", "Должность", 300), ("employer", "Компания", 180),
-            ("salary", "Зарплата", 150),
-        ]:
-            self.tree.heading(col, text=title)
-            self.tree.column(col, width=width,
-                             anchor="center" if col == "score" else "w")
-        vsb = ttk.Scrollbar(table_frame, orient="vertical",
-                            command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
-        self.tree.tag_configure("good", background="#e3f7e3")
-        self.tree.tag_configure("bad", background="#f5b8b8")
-        self.tree.tag_configure("unknown", background="#fff3cd")
-        self.tree.bind("<Double-1>", self.on_open_vacancy)
-        self.tree.bind("<<TreeviewSelect>>", self.on_select_result)
-
-        reason_frame = ttk.LabelFrame(
-            res, text="Почему такая оценка (выберите строку; "
-                      "двойной клик — открыть вакансию)")
-        reason_frame.pack(fill="x", padx=4, pady=4)
-        self.txt_reason = tk.Text(reason_frame, height=4, wrap="word",
-                                  state="disabled", relief="flat")
-        self.txt_reason.pack(fill="x", padx=4, pady=4)
-
-        # ---------- нижняя общая зона ----------
-        controls = ttk.Frame(self.root)
-        controls.pack(fill="x", padx=8, pady=2)
-        self.btn_start = ttk.Button(controls, text="▶  Старт",
-                                    command=self.on_start)
-        self.btn_start.pack(side="left", padx=4)
-        self.btn_stop = ttk.Button(controls, text="■  Стоп",
-                                   command=self.on_stop, state="disabled")
-        self.btn_stop.pack(side="left", padx=4)
-        ttk.Button(controls, text="Мой профиль…",
-                   command=self.on_open_profile).pack(side="left", padx=12)
-        ttk.Button(controls, text="Лучшие (top.md)",
-                   command=self.on_open_top).pack(side="left", padx=4)
-        ttk.Button(controls, text="Папка результатов",
-                   command=self.on_open_results).pack(side="left", padx=4)
-        self.progress = ttk.Progressbar(controls, mode="indeterminate",
-                                        length=180)
-        self.progress.pack(side="right", padx=4)
-
-        log_frame = ttk.LabelFrame(self.root, text="Журнал")
-        log_frame.pack(fill="both", padx=8, pady=2)
-        self.log_widget = scrolledtext.ScrolledText(
-            log_frame, height=7, state="disabled", wrap="word")
-        self.log_widget.pack(fill="both", expand=True, padx=4, pady=4)
-
-        self.lbl_status = ttk.Label(
-            self.root, text="Готов к работе", relief="sunken", anchor="w",
-            padding=(8, 3))
-        self.lbl_status.pack(fill="x", side="bottom")
+        from desktop_ui import DesktopUI
+        self.ui = DesktopUI(self, AREAS, EXPERIENCE, EXP_FILTER)
 
     # -- служебное --------------------------------------------------------
 
@@ -1938,8 +1598,8 @@ class App:
         tree.configure(yscrollcommand=vsb.set)
         tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
-        tree.tag_configure("good", background="#e3f7e3")
-        tree.tag_configure("bad", background="#f5b8b8")
+        tree.tag_configure("good", background="#f5f9f3")
+        tree.tag_configure("bad", background="#fbf9ef")
 
         reason_frame = ttk.LabelFrame(
             win, text="Почему такая оценка (выберите строку; "
@@ -2185,6 +1845,8 @@ class App:
         if not sel or sel[0] not in self.result_data:
             return
         data = self.result_data[sel[0]]
+        if hasattr(self, "ui"):
+            self.ui.show_detail(data)
         text = data["reason"] or "(без объяснения)"
         if data.get("resume"):
             text = f'Резюме: {data["resume"]} · {text}'
@@ -2233,6 +1895,7 @@ class App:
         self.btn_stop.configure(state="normal")
         self.progress.start(12)
         self.lbl_status.configure(text="Работаю…")
+        self.ui.set_running(True)
         self.worker = Worker(cfg, profile, self.queue, self.stop_event)
         self.worker.start()
         self.log("Запуск…")
@@ -2248,28 +1911,10 @@ class App:
                 if kind == "log":
                     self.log(payload)
                 elif kind == "result":
-                    if payload["suitable"] is None:
-                        score_text, verdict, tag = "—", "ошибка", "unknown"
-                    else:
-                        score_text = f'{payload["score"]}/100'
-                        verdict = payload.get("verdict", "")
-                        # WEAK красим как REJECT (не зелёным «good») —
-                        # технически WEAK != REJECT (verdict != "REJECT"
-                        # значит suitable, попадает в suitable.md), но
-                        # визуально это тоже «сомнительно», а не «хорошо».
-                        tag = "good" if verdict in (
-                            "STRONG_MATCH", "MATCH") else "bad"
-                    iid = self.tree.insert(
-                        "", 0,
-                        values=(score_text, verdict,
-                                payload.get("direction") or "—",
-                                payload.get("resume") or "—",
-                                payload["name"], payload["employer"],
-                                payload["salary"]),
-                        tags=(tag,))
-                    self.result_data[iid] = payload
+                    self.ui.add_result(payload)
                 elif kind == "stats":
                     skipped, checked, suitable = payload
+                    self.ui.set_stats(skipped, checked, suitable)
                     self.lbl_status.configure(
                         text=f"Отсеяно быстрыми фильтрами: {skipped}   ·   "
                              f"Проверено нейросетью: {checked}   ·   "
@@ -2278,6 +1923,7 @@ class App:
                     self.btn_start.configure(state="normal")
                     self.btn_stop.configure(state="disabled")
                     self.progress.stop()
+                    self.ui.set_running(False)
         except queue.Empty:
             pass
         self.root.after(150, self._poll_queue)

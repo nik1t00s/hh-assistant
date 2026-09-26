@@ -12,5 +12,6 @@
 !/tests/
 !/examples/
 !/CHANGELOG.md
+!/start.cmd
 __pycache__/
 *.py[cod]

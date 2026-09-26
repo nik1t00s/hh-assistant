@@ -1440,6 +1440,9 @@ class App:
 
         self._build_ui()
         self._ensure_profile()
+        for key, warning in self.cfg.get("_credential_errors", {}).items():
+            account = "HH" if key == "hh_cookie" else "SuperJob"
+            self.log(f"Cookies {account}: {warning} Обычный поиск доступен без cookies.")
         self.root.after(150, self._poll_queue)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -2202,7 +2205,9 @@ class App:
         resume_only = cfg.get("recs_enabled") and cfg.get("hh_resume_only")
         if resume_only and not (cfg.get("hh_cookie") and re.search(
                 r"[0-9a-f]{30,45}", cfg.get("resume_hash", ""))):
-            messagebox.showwarning("Поиск", "Для режима рекомендаций нужны cookies и ссылка на резюме.")
+            detail = cfg.get("_credential_errors", {}).get("hh_cookie", "")
+            messagebox.showwarning("Поиск", "Для режима рекомендаций нужны cookies и ссылка на резюме.\n"
+                                   + detail + "\nДля обычного поиска отключите рекомендации под резюме.")
             return
         if not (cfg["role_ids"] or cfg["queries"].strip() or cfg.get("recs_enabled")
                 or (cfg.get("telegram_enabled") and cfg.get("telegram_channels", "").strip())

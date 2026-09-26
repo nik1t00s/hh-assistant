@@ -129,6 +129,61 @@ class VaultTests(unittest.TestCase):
             self.assertEqual(settings.load_settings(path, {})["hh_cookie"], "original")
             self.assertEqual(list(self.values.values()), ["original"])
 
+    def test_missing_backend_allows_load_and_preserves_reference_on_save(self):
+        with tempfile.TemporaryDirectory() as folder, patch("settings._keyring", return_value=self.vault):
+            path = Path(folder) / "config.json"
+            settings.save_settings(path, {"hh_cookie": "original", "pages": 2})
+            references = read_json(path)["credentials"]
+            old_values = dict(self.values)
+            for error in [settings.CredentialDependencyError("keyring missing"), OSError("vault locked")]:
+                with self.subTest(error=type(error).__name__), \
+                     patch("settings._keyring", side_effect=error):
+                    loaded = settings.load_settings(path, {})
+                    self.assertEqual(loaded["hh_cookie"], "")
+                    self.assertIn("hh_cookie", loaded["_credential_errors"])
+                    loaded["pages"] = 5
+                    settings.save_settings(path, loaded)
+                self.assertEqual(read_json(path)["credentials"], references)
+                self.assertNotIn("_credential_errors", read_json(path))
+                self.assertEqual(self.values, old_values)
+            self.assertEqual(settings.load_settings(path, {})["hh_cookie"], "original")
+
+    def test_missing_chunk_is_preserved_until_explicit_replacement(self):
+        with tempfile.TemporaryDirectory() as folder, patch("settings._keyring", return_value=self.vault):
+            path = Path(folder) / "config.json"
+            settings.save_settings(path, {"hh_cookie": "x" * 1001})
+            self.values.pop(next(iter(self.values)))
+            loaded = settings.load_settings(path, {})
+            remaining = dict(self.values)
+            settings.save_settings(path, loaded)
+            self.assertEqual(self.values, remaining)
+            loaded["hh_cookie"] = "replacement"
+            settings.save_settings(path, loaded)
+            self.assertNotIn("hh_cookie", loaded["_credential_errors"])
+            self.assertEqual(settings.load_settings(path, {})["hh_cookie"], "replacement")
+            self.assertEqual(list(self.values.values()), ["replacement"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows GUI smoke test")
+    def test_gui_opens_when_keyring_is_missing(self):
+        import tkinter as tk
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "config.json"
+            write_json(path, {"credentials": {"hh_cookie": {"id": "synthetic", "count": 1}}})
+            profile = Path(folder) / "profile.txt"
+            profile.write_text("Test profile", encoding="utf-8")
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                with patch.object(main, "CONFIG_PATH", str(path)), \
+                     patch.object(main, "PROFILE_PATH", str(profile)), \
+                     patch("settings._keyring", side_effect=settings.CredentialDependencyError("keyring missing")):
+                    app = main.App(root)
+                    root.update_idletasks()
+                    self.assertIn("hh_cookie", app.cfg["_credential_errors"])
+                    self.assertIsNone(app.worker)
+            finally:
+                root.destroy()
+
 
 class ResumeTests(unittest.TestCase):
     def setUp(self):

@@ -1,6 +1,7 @@
 """Desktop presentation, separate from search and evaluation logic."""
 import tkinter as tk
 from tkinter import ttk, messagebox
+from browser_queue import suitable_urls
 
 BG = "#f3f5f1"
 PAPER = "#ffffff"
@@ -226,6 +227,9 @@ class DesktopUI:
         self.count = label(toolbar, "", 9, MUTED)
         self.count.pack(side="left", padx=12)
         ttk.Button(toolbar, text="История ↗", command=app.on_open_history).pack(side="right")
+        self.bulk_button = ttk.Button(toolbar, text="Открыть все вакансии", state="disabled",
+                                      command=app.on_open_all_vacancies)
+        self.bulk_button.pack(side="right", padx=(0, 10))
         filters = tk.Frame(body, bg=BG)
         filters.pack(fill="x", pady=(0, 12))
         self.query = tk.StringVar()
@@ -477,6 +481,7 @@ class DesktopUI:
             else:
                 a.tree.detach(iid)
         self.count.configure(text=f"{len(visible)} из {len(a.result_data)}")
+        self.update_bulk_button()
         if visible:
             self.empty.place_forget()
             if not selected or selected[0] not in visible:
@@ -502,6 +507,13 @@ class DesktopUI:
         self.detail_verdict.configure(text=VERDICTS.get(data.get("verdict"), "На проверку").upper())
         self.detail_meta.configure(text=f"{data['employer']}\n{data['salary']}\n{data.get('direction') or 'Направление не определено'}")
         self.open_button.configure(state="normal")
+
+    def update_bulk_button(self):
+        if self.app.browser_queue.active:
+            self.bulk_button.configure(text="Остановить открытие", state="normal")
+        else:
+            enabled = not self.running and bool(suitable_urls(self.app.result_data.values()))
+            self.bulk_button.configure(text="Открыть все вакансии", state="normal" if enabled else "disabled")
 
     def set_stats(self, skipped, checked, suitable):
         for widget, value in zip(self.metrics, (checked, suitable, skipped)):

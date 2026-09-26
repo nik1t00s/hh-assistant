@@ -15,6 +15,7 @@ import webbrowser
 from datetime import datetime
 
 from llm_client import StreamingLLMClient
+from browser_queue import BrowserQueue, suitable_urls
 from settings import load_settings, save_settings
 from storage import EvaluationStore, atomic_text, evaluation_fingerprint
 from vacancy_rules import (strip_html, extract_jobposting_description,
@@ -1438,6 +1439,7 @@ class App:
         self.stop_event = threading.Event()
         self.worker = None
         self.result_data = {}
+        self.browser_queue = BrowserQueue(root, self._browser_queue_update)
 
         self._build_ui()
         self._ensure_profile()
@@ -1448,6 +1450,7 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def on_close(self):
+        self.browser_queue.cancel(notify=False)
         if self.worker is not None and self.worker.is_alive():
             self.stop_event.set()
             self.lbl_status.configure(text="Завершаю запрос и сохраняю результаты…")
@@ -1841,6 +1844,20 @@ class App:
         if sel and sel[0] in self.result_data:
             webbrowser.open(self.result_data[sel[0]]["url"])
 
+    def on_open_all_vacancies(self):
+        if self.browser_queue.active:
+            self.browser_queue.cancel()
+            return
+        if self.ui.running:
+            return
+        urls = suitable_urls(self.result_data.values())
+        if urls:
+            self.browser_queue.start(urls)
+
+    def _browser_queue_update(self, message):
+        self.lbl_status.configure(text=message)
+        self.ui.update_bulk_button()
+
     def on_select_result(self, _event):
         sel = self.tree.selection()
         if not sel or sel[0] not in self.result_data:
@@ -1891,6 +1908,7 @@ class App:
                 "знает, что вам подходит.\nКнопка «Мой профиль…».")
             return
 
+        self.browser_queue.cancel(notify=False)
         self.stop_event.clear()
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")

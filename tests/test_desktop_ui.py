@@ -27,6 +27,7 @@ class DesktopTests(unittest.TestCase):
         self.app = main.App(self.root)
 
     def tearDown(self):
+        self.app.browser_queue.cancel(notify=False)
         self.root.destroy()
         for item in reversed(self.patches):
             item.stop()
@@ -88,6 +89,38 @@ class DesktopTests(unittest.TestCase):
         self.assertIn("только рекомендации HH", self.app.ui.mode.cget("text"))
         self.app.var_resume_only.set(False)
         self.assertIn("выбранным источникам", self.app.ui.mode.cget("text"))
+
+    def test_bulk_open_waits_for_stop_and_includes_filtered_matches(self):
+        ui = self.app.ui
+        self.assertTrue(ui.bulk_button.instate(["disabled"]))
+        with patch.object(main, "Worker", return_value=Mock()):
+            self.app.on_start()
+        ui.add_result(self.row("First"))
+        ui.add_result(dict(self.row("Second"), url="https://example.com/2"))
+        ui.add_result(dict(self.row("Rejected", "REJECT", False), url="https://example.com/3"))
+        ui.query.set("First")
+        self.app.on_stop()
+        self.assertTrue(ui.bulk_button.instate(["disabled"]))
+        self.app.queue.put(("done", None))
+        self.app._poll_queue()
+        self.assertFalse(ui.bulk_button.instate(["disabled"]))
+        self.app.browser_queue.opener = Mock(return_value=True)
+        self.app.on_open_all_vacancies()
+        self.assertEqual(self.app.browser_queue.urls, ["https://example.com", "https://example.com/2"])
+        self.app.browser_queue.opener.assert_called_once_with("https://example.com")
+        self.app.on_open_all_vacancies()
+        self.assertFalse(self.app.browser_queue.active)
+
+    def test_new_search_cancels_browser_queue(self):
+        self.app.ui.add_result(self.row("First"))
+        self.app.ui.add_result(dict(self.row("Second"), url="https://example.com/2"))
+        self.app.browser_queue.opener = Mock(return_value=True)
+        self.app.on_open_all_vacancies()
+        self.assertTrue(self.app.browser_queue.active)
+        with patch.object(main, "Worker", return_value=Mock()):
+            self.app.on_start()
+        self.assertFalse(self.app.browser_queue.active)
+        self.assertIsNone(self.app.browser_queue.pending)
 
     def test_startup_does_not_load_history_into_current_results(self):
         main.App._read_history_rows.assert_not_called()

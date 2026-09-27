@@ -53,11 +53,49 @@ class BrowserQueueTests(unittest.TestCase):
     def test_browser_failure_stops_queue(self):
         for failure in (False, RuntimeError('unavailable')):
             with self.subTest(failure=failure):
+                self.queue.cancel(notify=False)
                 self.opener.side_effect = failure if isinstance(failure, Exception) else None
                 self.opener.return_value = False
                 self.queue.start(['https://example.com/1', 'https://example.com/2'])
                 self.assertFalse(self.queue.active)
                 self.assertFalse(self.scheduler.callbacks)
+                self.assertTrue(self.queue.paused)
+
+    def test_258_urls_require_six_explicit_batches(self):
+        urls = [f'https://hh.ru/vacancy/{i}' for i in range(258)]
+        self.queue.start(urls)
+        for total in [50, 100, 150, 200, 250, 258]:
+            while self.scheduler.callbacks:
+                self.scheduler.tick()
+            self.assertEqual(self.opener.call_count, total)
+            self.assertFalse(self.queue.active)
+            self.assertEqual(self.queue.paused, total < 258)
+            if total < 258:
+                self.queue.resume()
+        self.assertEqual([call.args[0] for call in self.opener.call_args_list], urls)
+        self.assertTrue(all(delay == 20000 for delay in self.scheduler.delays))
+
+    def test_manual_pause_resumes_without_reopening_and_cancel_discards(self):
+        self.queue.start(['https://example.com/1', 'https://example.com/2'])
+        stale = next(iter(self.scheduler.callbacks.values()))
+        self.queue.pause()
+        stale()
+        self.assertEqual(self.opener.call_count, 1)
+        self.assertFalse(self.scheduler.callbacks)
+        self.queue.resume()
+        self.opener.assert_called_with('https://example.com/2')
+        self.assertEqual(self.opener.call_count, 2)
+        self.queue.cancel()
+        self.assertFalse(self.queue.paused)
+
+    def test_hh_aliases_and_tracking_are_one_vacancy(self):
+        rows = [dict(url=url, suitable=True, verdict='MATCH') for url in [
+            'https://hh.ru/vacancy/123?from=search',
+            'https://moscow.hh.ru/vacancy/123#response',
+            'http://hh.ru/vacancy/123/', 'https://hh.ru/vacancy/124']]
+        self.assertEqual(suitable_urls(rows), ['https://hh.ru/vacancy/123', 'https://hh.ru/vacancy/124'])
+        rows.append(dict(url='https://hh.ru/vacancy/123?from=other', suitable=False, verdict='REJECT'))
+        self.assertEqual(suitable_urls(rows), ['https://hh.ru/vacancy/124'])
 
     def test_selection_uses_latest_verdict_and_only_web_links(self):
         def row(url, suitable=True, verdict='MATCH'):

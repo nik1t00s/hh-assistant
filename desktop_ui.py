@@ -510,7 +510,10 @@ class DesktopUI:
 
     def update_bulk_button(self):
         if self.app.browser_queue.active:
-            self.bulk_button.configure(text="Остановить открытие", state="normal")
+            self.bulk_button.configure(text="Приостановить открытие", state="normal")
+        elif self.app.browser_queue.paused:
+            remaining = len(self.app.browser_queue.urls) - self.app.browser_queue.opened
+            self.bulk_button.configure(text=f"Продолжить · {min(50, remaining)} вакансий", state="normal")
         else:
             enabled = not self.running and bool(suitable_urls(self.app.result_data.values()))
             self.bulk_button.configure(text="Открыть все вакансии", state="normal" if enabled else "disabled")

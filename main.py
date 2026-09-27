@@ -1846,9 +1846,12 @@ class App:
 
     def on_open_all_vacancies(self):
         if self.browser_queue.active:
-            self.browser_queue.cancel()
+            self.browser_queue.pause()
             return
         if self.ui.running:
+            return
+        if self.browser_queue.paused:
+            self.browser_queue.resume()
             return
         urls = suitable_urls(self.result_data.values())
         if urls:

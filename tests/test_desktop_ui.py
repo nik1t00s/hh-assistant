@@ -110,6 +110,11 @@ class DesktopTests(unittest.TestCase):
         self.app.browser_queue.opener.assert_called_once_with("https://example.com")
         self.app.on_open_all_vacancies()
         self.assertFalse(self.app.browser_queue.active)
+        self.assertTrue(self.app.browser_queue.paused)
+        self.assertIn("Продолжить", ui.bulk_button.cget("text"))
+        self.app.on_open_all_vacancies()
+        self.assertEqual(self.app.browser_queue.opener.call_count, 2)
+        self.app.browser_queue.opener.assert_called_with("https://example.com/2")
 
     def test_new_search_cancels_browser_queue(self):
         self.app.ui.add_result(self.row("First"))

@@ -29,7 +29,7 @@ def suitable_urls(rows):
             continue
         latest[url] = row
     return [url for url, row in latest.items()
-            if row.get("suitable") is True and row.get("verdict") != "REJECT"]
+            if row.get("suitable") is True and row.get("verdict") in {"MATCH", "STRONG_MATCH", "WEAK"}]
 
 
 class BrowserQueue:

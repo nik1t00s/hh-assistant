@@ -11,7 +11,7 @@ LINE = "#e0e7df"
 ACCENT = "#287568"
 NAV = "#183b34"
 VERDICTS = {"STRONG_MATCH": "Отлично подходит", "MATCH": "Подходит",
-            "WEAK": "Есть вопросы", "REJECT": "Не подходит"}
+            "WEAK": "Запасной вариант", "REVIEW": "Нужно уточнить", "REJECT": "Не подходит"}
 
 
 def label(parent, text="", size=10, color=INK, bold=False, **kwargs):
@@ -236,7 +236,7 @@ class DesktopUI:
         ttk.Entry(filters, textvariable=self.query, width=24).pack(side="left", fill="x", expand=True)
         self.filter = tk.StringVar(value="Подходящие")
         ttk.Combobox(filters, textvariable=self.filter, state="readonly", width=16,
-                     values=("Подходящие", "Все", "На проверку", "Отклонённые")).pack(side="left", padx=(10, 0))
+                     values=("Подходящие", "Нужно уточнить", "Все", "На проверку", "Отклонённые")).pack(side="left", padx=(10, 0))
         self.query.trace_add("write", lambda *_: self.refresh_results())
         self.filter.trace_add("write", lambda *_: self.refresh_results())
         label(body, "Текущий поиск · прошлые результаты доступны в истории", 9, MUTED).pack(anchor="w", pady=(0, 12))
@@ -473,6 +473,7 @@ class DesktopUI:
             matches = (not query or query in (row["name"] + " " + row["employer"]).casefold())
             matches &= (wanted == "Все" or
                         wanted == "Подходящие" and row.get("suitable") is True or
+                        wanted == "Нужно уточнить" and verdict == "REVIEW" or
                         wanted == "На проверку" and (row.get("suitable") is None or verdict == "WEAK") or
                         wanted == "Отклонённые" and verdict == "REJECT")
             if matches:

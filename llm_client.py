@@ -69,6 +69,10 @@ class StreamingLLMClient:
         }
         if seed is not None:
             payload["seed"] = seed
+        schema = getattr(self, "response_schema", None)
+        if schema is not None:
+            payload["response_format"] = {"type": "json_schema", "json_schema": {
+                "name": "vacancy_facts", "strict": True, "schema": schema}}
         pieces = []
         self.last_finish = None  # finish_reason последнего запроса
         chunk_count = 0

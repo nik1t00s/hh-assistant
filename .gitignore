@@ -15,5 +15,6 @@
 !/start.cmd
 !/desktop_ui.py
 !/browser_queue.py
+!/evidence_eval.py
 __pycache__/
 *.py[cod]

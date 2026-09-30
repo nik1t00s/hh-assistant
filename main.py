@@ -16,6 +16,7 @@ from datetime import datetime
 
 from llm_client import StreamingLLMClient
 from browser_queue import BrowserQueue, suitable_urls
+from evidence_eval import FACT_PROMPT, FACT_SCHEMA, parse_facts, valid_facts, verify_facts, decide, audit_path, save_audit, numbered_source, materialize
 from settings import load_settings, save_settings
 from storage import EvaluationStore, atomic_text, evaluation_fingerprint
 from vacancy_rules import (strip_html, extract_jobposting_description,
@@ -653,12 +654,20 @@ class EvaluationExhausted(RuntimeError):
 
 class LLMClient(StreamingLLMClient):
     def evaluate(self, profile, vacancy_text):
-        content = self._chat_retrying(
-            SYSTEM_PROMPT.format(profile=profile), vacancy_text,
-            temperature=0.2, max_tokens=1200,
-            validator=self._valid_evaluation,
-        )
-        return self._parse(content)
+        self.last_evidence = None
+        lines, numbered = numbered_source(vacancy_text)
+        self.response_schema = FACT_SCHEMA
+        try:
+            content = self._chat_retrying(
+                FACT_PROMPT, numbered, temperature=0.1, max_tokens=4000,
+                validator=valid_facts)
+        finally:
+            self.response_schema = None
+        raw = parse_facts(content)
+        facts, issues = verify_facts(materialize(raw, lines), vacancy_text)
+        result = decide(facts, issues)
+        self.last_evidence = dict(raw=raw, verified=facts, issues=issues, result=result)
+        return result
 
     @classmethod
     def _valid_evaluation(cls, content):
@@ -771,7 +780,7 @@ class LLMClient(StreamingLLMClient):
             survivors |= chunk_ids - excluded
         return survivors
 
-    _VERDICTS = {"STRONG_MATCH", "MATCH", "WEAK", "REJECT"}
+    _VERDICTS = {"STRONG_MATCH", "MATCH", "WEAK", "REJECT", "REVIEW"}
     _DIRECTIONS = {"координация", "техподдержка", "данные", "оргроли"}
     # Какое из готовых резюме подходит под направление — решается кодом,
     # не моделью: одним полем меньше, о котором надо думать при чтении
@@ -884,7 +893,8 @@ class ResultWriter:
             f"_(направление {direction or '—'}, резюме {resume})_\n"
             f"  - {reason}\n"
         )
-        path = self.suitable_path if suitable else self.rejected_path
+        path = (os.path.join(RESULTS_DIR, "review.md") if verdict == "REVIEW" else
+                self.suitable_path if suitable else self.rejected_path)
         with open(path, "a", encoding="utf-8") as f:
             f.write(line)
         with open(self.csv_path, "a", encoding="utf-8-sig", newline="") as f:
@@ -1007,7 +1017,7 @@ class Worker(threading.Thread):
 
         profile_hash = evaluation_fingerprint(
             self.profile, cfg, llm.model, llm_fast.model,
-            [SYSTEM_PROMPT, TRIAGE_PROMPT])
+            [SYSTEM_PROMPT, TRIAGE_PROMPT, FACT_PROMPT, "evidence-rules-v1"])
         self.store = EvaluationStore(os.path.join(CACHE_DIR, "evaluations.sqlite3"),
                                      profile_hash)
         writer = ResultWriter(profile_hash)
@@ -1272,31 +1282,31 @@ class Worker(threading.Thread):
                             f"Должность: {item['name']}\n"
                             f"Компания: {item['employer']}\n"
                             f"Зарплата: {item['salary']}\n"
-                            f"Требуемый опыт: "
+                            f"Тег HH (не требование из описания): "
                             f"{EXP_LABEL.get(item.get('experience'), 'не указан')}"
                             f"\n\nОписание: {description}"
                         )
 
                         self.log(f"Оцениваю: {item['name']} "
                                  f"({item['employer']})…")
+                        saved_description = audit_path(CACHE_DIR, profile_hash, item, vacancy_text)
+                        save_audit(saved_description, item, vacancy_text, profile_hash,
+                                   llm.model, self.profile, status="pending")
                         try:
                             verdict, score, direction, reason, resume = (
                                 llm.evaluate(self.profile, vacancy_text))
                         except (EvaluationExhausted, requests.RequestException, RuntimeError) as e:
+                            save_audit(saved_description, item, vacancy_text, profile_hash,
+                                       llm.model, self.profile, status="failed", error=str(e))
                             if self.stop_event.is_set():
                                 break
                             self._record_issue(writer, item, "failed", str(e))
                             continue
 
-                        cap = score_cap(item["name"], description) or salary_cap(item.get("salary", ""))
-                        if cap and verdict != "REJECT":
-                            self.log(f"Вердикт «{verdict}» изменён на "
-                                     f"REJECT: {cap}.")
-                            verdict = "REJECT"
-                            score = min(score, 10)
-                            reason = f"{reason} [Отклонено программно: {cap}.]"
-
-                        suitable = verdict != "REJECT"
+                        save_audit(saved_description, item, vacancy_text, profile_hash,
+                                   llm.model, self.profile, status="evaluated",
+                                   evidence=getattr(llm, "last_evidence", None))
+                        suitable = None if verdict == "REVIEW" else verdict != "REJECT"
                         if suitable:
                             suitable_count += 1
                         writer.write(item, score, verdict, direction,
@@ -1418,7 +1428,7 @@ class Worker(threading.Thread):
         except OSError:
             return
         top = sorted(
-            (v for v in rows.values() if v["verdict"] != "REJECT"),
+            (v for v in rows.values() if v["verdict"] in {"MATCH", "STRONG_MATCH", "WEAK"}),
             key=lambda v: (-v["score"],
                            self._DIRECTION_RANK.get(v["direction"], 4)))
         path = os.path.join(RESULTS_DIR, "top.md")
@@ -1551,7 +1561,7 @@ class App:
                         "salary": salary, "url": url, "reason": reason,
                         "direction": direction or None,
                         "resume": resume,
-                        "suitable": True,
+                        "suitable": None if verdict == "REVIEW" else True,
                     }
         except OSError:
             return []
@@ -1589,7 +1599,7 @@ class App:
         var_verdict = tk.StringVar(value="Все")
         cmb_verdict = ttk.Combobox(
             filter_row, textvariable=var_verdict,
-            values=["Все", "STRONG_MATCH", "MATCH", "WEAK"],
+            values=["Все", "STRONG_MATCH", "MATCH", "WEAK", "REVIEW"],
             state="readonly", width=14)
         cmb_verdict.pack(side="left")
 

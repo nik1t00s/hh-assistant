@@ -297,7 +297,7 @@ class LLMTests(unittest.TestCase):
         response = self.streaming_response(payload)
         client = main.LLMClient("http://example.invalid/v1", "test", lambda _: None)
         with patch("llm_client.requests.post", return_value=response):
-            result = client.evaluate("Synthetic profile", "Synthetic vacancy")
+            result = client._parse(client._chat("Synthetic profile", "Synthetic vacancy", 0.2, 1200))
         self.assertEqual(result[:4], ("MATCH", 80, "данные", payload["reason"]))
         self.assertEqual(client.last_finish, "stop")
         response.__exit__.assert_called_once()
@@ -314,7 +314,7 @@ class LLMTests(unittest.TestCase):
                    "reason": "Вакансия не соответствует выбранной сфере работы"}
         client = main.LLMClient("http://example.invalid/v1", "test", lambda _: None)
         with patch("llm_client.requests.post", return_value=self.streaming_response(payload)) as request:
-            verdict, score, direction, reason, resume = client.evaluate("profile", "vacancy")
+            verdict, score, direction, reason, resume = client._parse(client._chat("profile", "vacancy", 0.2, 1200))
         request.assert_called_once()
         self.assertEqual((verdict, score, direction), ("REJECT", 0, None))
 

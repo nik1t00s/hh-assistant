@@ -90,6 +90,15 @@ class DesktopTests(unittest.TestCase):
         self.app.var_resume_only.set(False)
         self.assertIn("выбранным источникам", self.app.ui.mode.cget("text"))
 
+    def test_review_filter_excludes_confirmed_matches(self):
+        self.app.ui.add_result(self.row('Confirmed'))
+        self.app.ui.add_result(self.row('Clarify','REVIEW',None))
+        self.assertEqual(len(self.app.tree.get_children()),1)
+        self.app.ui.filter.set('Нужно уточнить')
+        ids=self.app.tree.get_children()
+        self.assertEqual(len(ids),1)
+        self.assertEqual(self.app.result_data[ids[0]]['verdict'],'REVIEW')
+
     def test_bulk_open_waits_for_stop_and_includes_filtered_matches(self):
         ui = self.app.ui
         self.assertTrue(ui.bulk_button.instate(["disabled"]))

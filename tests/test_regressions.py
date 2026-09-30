@@ -14,7 +14,7 @@ import main
 import resume_tailor
 import settings
 from storage import EvaluationStore, evaluation_fingerprint, read_json, write_json
-from vacancy_rules import extract_jobposting_description, score_cap
+from vacancy_rules import extract_jobposting_description, score_cap, salary_cap
 
 
 class RulesTests(unittest.TestCase):
@@ -33,7 +33,27 @@ class RulesTests(unittest.TestCase):
 
     def test_optional_experience(self):
         self.assertIsNone(score_cap("Специалист", "Будет плюсом опыт работы от 3 лет."))
-        self.assertIsNotNone(score_cap("Специалист", "Обязателен опыт работы от 3 лет."))
+        self.assertIsNone(score_cap("Специалист", "Обязателен опыт работы от 3 лет."))
+
+    def test_entry_experience_and_testing_are_not_hard_rejections(self):
+        for title, description in [
+                ("QA стажер", "Ручное тестирование с обучением"),
+                ("Координатор внедрения", "Опыт работы координатором от 1 года"),
+                ("Специалист", "Опыт работы в системной интеграции от года")]:
+            self.assertIsNone(score_cap(title, description))
+        self.assertIsNotNone(score_cap("Руководитель отдела", "Управление командой"))
+
+    def test_salary_rejects_only_known_net_monthly_upper_bound(self):
+        for salary in ["35 000 руб. на руки в месяц", "до 39 999 ₽ на руки в месяц",
+                       "от 30 000 до 39 000 руб. на руки в месяц", "35 тыс. ₽ на руки в месяц"]:
+            with self.subTest(salary=salary):
+                self.assertIsNotNone(salary_cap(salary))
+        for salary in ["40 000 ₽ на руки в месяц", "от 30 000 ₽ на руки в месяц",
+                       "от 30 000 до 60 000 руб. на руки в месяц", "не указана",
+                       "35 000 руб. до вычета налогов в месяц", "5000 ₽ на руки за смену",
+                       "35 000 руб. на руки", "500 USD на руки в месяц"]:
+            with self.subTest(salary=salary):
+                self.assertIsNone(salary_cap(salary))
 
     def test_jsonld_forms_and_malformed_blocks(self):
         item = {"@type": "JobPosting", "description": "<p>Задачи</p><p>Условия &amp; график</p>"}

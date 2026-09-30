@@ -80,57 +80,12 @@ def score_cap(title, description):
     Модели уровня 7B игнорируют такие правила в промпте, поэтому
     они продублированы кодом."""
     t = title.lower()
-    if re.search(r"тестиров|автотест|\baqa\b|\bqa\b", t):
-        return "автоматизация тестирования — не целевая роль"
     if re.search(r"руководитель\s+(отдела|направления|группы|департамента|"
                  r"службы)", t):
         return "руководящая позиция — не стартовый уровень"
     d = (description or "").lower()
 
-    def optional_mention(match):
-        """11.09.2026: до этой проверки регексы на «опыт от N лет» ловили
-        и формулировки вида «будет плюсом опыт работы от 3 лет» — а это
-        НЕ требование, значит не должно резать хорошую вакансию в REJECT.
-        Пользователь явно попросил минимизировать риск потерять
-        подходящую вакансию — смотрим окно вокруг совпадения на слова,
-        превращающие требование в необязательный бонус."""
-        window = d[max(0, match.start() - 60):match.end() + 40]
-        return bool(re.search(
-            r"приветствуется|будет\s+плюсом|как\s+плюс|плюсом\s+будет|"
-            r"желательно|преимуществ|не\s+обязательно|опционально",
-            window))
-
-    m = re.search(
-        r"опыт[^.!\n]{0,50}?от\s*([3-9])(?:-х)?\s*(?:лет|года)"
-        r"|([3-9])\+\s*лет\s*опыта", d)
-    if m and not optional_mention(m):
-        years = int(m.group(1) or m.group(2))
-        return f"в описании требуют опыт от {years} лет"
-    # 31.08.2026: отдельно от общего "опыт от N лет" — требование ГОТОВОГО
-    # опыта именно в этой должности («опыт работы сервис-менеджером от
-    # года», «опыт работы руководителем проектов от года») дисквалифицирует
-    # кандидата без коммерческого опыта даже при 1 годе, а не только при
-    # 3+. Искл. "опыт работы с/в/на ..." — это про инструмент/сферу,
-    # а не про предыдущую должность.
-    m = re.search(
-        r"опыт\s+работы\s+(?!с\s|со\s|в\s|на\s)\S*(?:ом|ем|ём)\b"
-        r"[^.!\n]{0,30}?от\s+(?:\d+\s*)?(?:года|лет)", d,
-    )
-    if m and not optional_mention(m):
-        return "требуется предыдущий опыт именно в этой должности (от года)"
-    # То же самое, но когда требуемое поле названо не должностью, а
-    # сферой через предлог: «опыт работы в ИБ/системной интеграции/
-    # внедрении... от 1 года» — это именно тот «боевой опыт в ИБ»,
-    # который profile.txt просит резать вниз, а не опыт с инструментом
-    # («опыт работы с базами данных» и т.п., что не ловим специально).
-    m = re.search(
-        r"опыт\s+работы\s+(?:в\s+|со?\s+)?"
-        r"(?:иб\b|информационн\w*\s+безопасност\w*|"
-        r"системн\w*\s+интеграц\w*|внедрени\w*\s+(?:ит|иб))"
-        r"[^.!\n]{0,60}?от\s+(?:\d+\s*)?(?:года|лет)", d,
-    )
-    if m and not optional_mention(m):
-        return "требуется предыдущий опыт именно в ИБ/внедрении (от года)"
+    # Experience and QA suitability depend on the current profile and task level.
     # A shift pattern alone says nothing about nights. Leave ambiguous language
     # to the model; only an affirmative mention can trigger this guard.
     for clause in re.split(r"[.!?;\n]|\bно\b|\bоднако\b", d):
@@ -139,6 +94,29 @@ def score_cap(title, description):
         if re.search(r"\bбез\b|\bне\b|\bнет\b|исключен|исключён|отсутств", clause):
             continue
         return "вахтовый метод работы"
+    return None
+
+
+def salary_cap(salary):
+    """Reject only an unambiguous monthly net RUB upper bound below 40k."""
+    text = (salary or '').lower().replace('\xa0', ' ').replace('\u202f', ' ')
+    if 'на руки' not in text or not re.search(r'руб|₽|\brur\b|\brub\b', text):
+        return None
+    if not re.search(r'месяц|/мес\b', text):
+        return None
+    if re.search(r'час|смен|недел|сутк|день|дня|год|до вычета|налог', text):
+        return None
+    amounts = re.findall(r'\d+(?:[ ]\d{3})*(?:[,.]\d+)?', text)
+    if not amounts:
+        return None
+    values = [float(value.replace(' ', '').replace(',', '.')) for value in amounts]
+    if 'тыс' in text:
+        values = [value * 1000 for value in values]
+    # A lower bound alone does not limit the possible offer.
+    if re.search(r'\bот\b', text) and not re.search(r'\bдо\b', text):
+        return None
+    if max(values) < 40000:
+        return 'зарплата ниже 40 000 ₽ на руки'
     return None
 
 

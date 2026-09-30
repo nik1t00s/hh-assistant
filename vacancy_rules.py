@@ -83,6 +83,9 @@ def score_cap(title, description):
     grade_reason = explicit_seniority(title, description)
     if grade_reason:
         return grade_reason
+    experience_reason = required_experience(description)
+    if experience_reason:
+        return experience_reason
     if re.search(r"руководитель\s+(отдела|направления|группы|департамента|"
                  r"службы)", t):
         return "руководящая позиция — не стартовый уровень"
@@ -97,6 +100,24 @@ def score_cap(title, description):
         if re.search(r"\bбез\b|\bне\b|\bнет\b|исключен|исключён|отсутств", clause):
             continue
         return "вахтовый метод работы"
+    return None
+
+
+def required_experience(description):
+    """Conservative guard for explicit prior commercial/same-role experience."""
+    text = (description or '').lower()
+    if re.search(r'(?:рассмотрим|рассматриваем|готовы\s+рассмотреть|можно)\s+[^.!\n]{0,50}без\s+опыта', text):
+        return None
+    for clause in re.split(r'[.!?;\n]', text):
+        if re.search(r'желател|будет\s+плюсом|преимуществ|не\s+обязател|не\s+требу|без\s+опыта', clause):
+            continue
+        scope = re.search(r'коммерческ\w*\s+опыт|опыт\s+коммерческ|'
+                          r'опыт\s+(?:работы\s+)?в\s+аналогичн\w*\s+должност|'
+                          r'опыт\s+работы\s+(?:координатором|администратором\s+проектов|'
+                          r'менеджером\s+проектов|руководителем\s+проектов)', clause)
+        duration = re.search(r'(?:от\s+|не\s+менее\s+)?(?:\d+(?:\s*[-–]\s*\d+)?\s*(?:лет|год\w*|месяц\w*)|одного\s+года|года)', clause)
+        if scope and (duration or re.search(r'обязател|требуется|необходим', clause)):
+            return 'явно требуется коммерческий опыт или опыт в аналогичной должности'
     return None
 
 

@@ -35,13 +35,27 @@ class RulesTests(unittest.TestCase):
         self.assertIsNone(score_cap("Специалист", "Будет плюсом опыт работы от 3 лет."))
         self.assertIsNone(score_cap("Специалист", "Обязателен опыт работы от 3 лет."))
 
-    def test_entry_experience_and_testing_are_not_hard_rejections(self):
+    def test_testing_and_general_experience_are_not_hard_rejections(self):
         for title, description in [
                 ("QA стажер", "Ручное тестирование с обучением"),
-                ("Координатор внедрения", "Опыт работы координатором от 1 года"),
                 ("Специалист", "Опыт работы в системной интеграции от года")]:
             self.assertIsNone(score_cap(title, description))
         self.assertIsNotNone(score_cap("Руководитель отдела", "Управление командой"))
+
+    def test_required_role_experience_with_explicit_exceptions(self):
+        for text in ['Опыт работы координатором от 1 года',
+                     'Обязателен коммерческий опыт от 6 месяцев',
+                     'Опыт работы в аналогичной должности от года',
+                     'Требуется коммерческий опыт. Предоставляем обучение.']:
+            with self.subTest(text=text):
+                self.assertIsNotNone(score_cap('Junior Project Coordinator', text))
+        for text in ['Опыт работы координатором от года будет плюсом',
+                     'Коммерческий опыт не обязателен',
+                     'Опыт работы в аналогичной должности от года. Рассмотрим кандидатов без опыта.',
+                     'Тег стажа: 1–3 года. Готовы обучать.',
+                     'Опыт использования Excel от года']:
+            with self.subTest(text=text):
+                self.assertIsNone(score_cap('Координатор', text))
 
     def test_salary_rejects_only_known_net_monthly_upper_bound(self):
         for salary in ["35 000 руб. на руки в месяц", "до 39 999 ₽ на руки в месяц",

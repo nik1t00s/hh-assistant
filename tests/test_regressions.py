@@ -55,6 +55,26 @@ class RulesTests(unittest.TestCase):
             with self.subTest(salary=salary):
                 self.assertIsNone(salary_cap(salary))
 
+    def test_explicit_middle_is_rejected_despite_entry_title(self):
+        for title, description in [
+            ('Администратор проектов', 'Требуемый уровень: Middle. Опыт 2–4 года.'),
+            ('Project Coordinator', 'Ищем middle специалиста'),
+            ('Middle Project Administrator', 'Работа с Jira'),
+            ('Администратор', 'Middle-уровень'),
+            ('Senior Project Manager', 'Документация и встречи')]:
+            with self.subTest(title=title, description=description):
+                self.assertIsNotNone(score_cap(title, description))
+
+    def test_grade_mentions_do_not_reject_juniors(self):
+        for title, description in [
+            ('Junior/Middle PM', 'Рассматриваем junior и middle'),
+            ('Координатор', 'Рост до уровня middle'),
+            ('Координатор', 'С вами будет senior-наставник'),
+            ('Координатор', 'Уровень middle не обязателен'),
+            ('Координатор', 'Опыт работы от года. Задачи: Jira и отчётность.')]:
+            with self.subTest(description=description):
+                self.assertIsNone(score_cap(title, description))
+
     def test_jsonld_forms_and_malformed_blocks(self):
         item = {"@type": "JobPosting", "description": "<p>Задачи</p><p>Условия &amp; график</p>"}
         for value in [item, [item], {"@graph": [None, item]},

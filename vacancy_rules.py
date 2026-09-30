@@ -80,6 +80,9 @@ def score_cap(title, description):
     Модели уровня 7B игнорируют такие правила в промпте, поэтому
     они продублированы кодом."""
     t = title.lower()
+    grade_reason = explicit_seniority(title, description)
+    if grade_reason:
+        return grade_reason
     if re.search(r"руководитель\s+(отдела|направления|группы|департамента|"
                  r"службы)", t):
         return "руководящая позиция — не стартовый уровень"
@@ -94,6 +97,30 @@ def score_cap(title, description):
         if re.search(r"\bбез\b|\bне\b|\bнет\b|исключен|исключён|отсутств", clause):
             continue
         return "вахтовый метод работы"
+    return None
+
+
+def explicit_seniority(title, description):
+    """Only explicit role grades; unrelated mentions of senior colleagues are allowed."""
+    grade = r'\b(?:middle|senior|мидд?л|сеньор|синьор)\b'
+    junior = r'\b(?:junior|джуниор|джун|стаж[её]р\w*)\b'
+    title = (title or '').lower()
+    if re.search(grade, title) and not re.search(junior, title):
+        return 'явный Middle/Senior-уровень — не стартовая позиция'
+    patterns = [
+        rf'(?:уровень|уровня|грейд|grade)\s*[:—–-]?\s*(?:от\s+)?{grade}',
+        rf'{grade}\s*[-—–]?\s*(?:уровень|уровня|грейд)',
+        rf'\b(?:ищем|требуется|нужен)\s+(?:специалист\w*\s+)?{grade}',
+    ]
+    for clause in re.split(r'[.!?;\n]', (description or '').lower()):
+        if re.search(junior, clause):
+            continue
+        # Growth goals, colleagues and negated requirements are not the vacancy grade.
+        if re.search(r'рост|расти|выраст|дораст|наставник|коллег|ментор|взаимодейств|'
+                     r'не\s+(?:требуется|нужен|ниже)|необязател|не\s+обязател', clause):
+            continue
+        if any(re.search(pattern, clause) for pattern in patterns):
+            return 'в описании явно указан Middle/Senior-уровень'
     return None
 
 

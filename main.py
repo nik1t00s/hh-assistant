@@ -14,7 +14,7 @@ import time
 import webbrowser
 from datetime import datetime
 
-from llm_client import StreamingLLMClient
+from llm_client import StreamingLLMClient, LocalModelManager
 from browser_queue import BrowserQueue, suitable_urls
 from evidence_eval import FACT_PROMPT, FACT_SCHEMA, parse_facts, valid_facts, verify_facts, decide, audit_path, save_audit, numbered_source, materialize
 from settings import load_settings, save_settings
@@ -634,7 +634,9 @@ TRIAGE_PROMPT = """\
 ПРОФИЛЬ КАНДИДАТА:
 {profile}
 
-Тебе дадут список вакансий в формате: id | должность | компания | зарплата.
+Тебе дадут список вакансий в формате: id | должность.
+Не оценивай опыт, зарплату, оформление и отрасль работодателя по заголовку.
+Координатор, администратор, ассистент, помощник, аналитик, поддержка, сопровождение, инженер, технический писатель, Junior/Middle и смешанные роли всегда проходят дальше.
 Верни id ТОЛЬКО тех вакансий, которые ТОЧНО НЕ подходят кандидату —
 совсем другая профессия или сфера (например: врач, визажист, повар,
 стройка и ремонт, физический труд, продажи по скрипту, недвижимость).
@@ -665,8 +667,26 @@ class LLMClient(StreamingLLMClient):
             self.response_schema = None
         raw = parse_facts(content)
         facts, issues = verify_facts(materialize(raw, lines), vacancy_text)
+        attempts = [json.loads(json.dumps(raw))]
+        # Repair unsupported evidence once; never silently accept an invalid claim.
+        if issues and decide(facts, issues)[0] == 'REVIEW':
+            self.response_schema = FACT_SCHEMA
+            try:
+                content = self._chat_retrying(
+                    FACT_PROMPT + '\nПовторная проверка. Исправь ссылки на строки и учитывай разделы. '
+                    'Неподтверждённые поля: ' + ', '.join(i.split(':')[0] for i in issues),
+                    numbered, temperature=0.1, max_tokens=4000, validator=valid_facts)
+                repaired = parse_facts(content)
+                for key in {i.split(':')[0] for i in issues}:
+                    raw[key] = repaired[key]
+                attempts.append(repaired)
+                facts, issues = verify_facts(materialize(raw, lines), vacancy_text)
+            finally:
+                self.response_schema = None
         result = decide(facts, issues)
-        self.last_evidence = dict(raw=raw, verified=facts, issues=issues, result=result)
+        self.last_evidence = dict(raw=raw, attempts=attempts, verified=facts, issues=issues, result=result,
+                                 usage=getattr(self, 'last_usage', None),
+                                 reasoning_chars=getattr(self, 'last_reasoning_chars', 0))
         return result
 
     @classmethod
@@ -756,8 +776,7 @@ class LLMClient(StreamingLLMClient):
             chunk = items[start:start + chunk_size]
             chunk_ids = {i["id"] for i in chunk}
             lines = "\n".join(
-                f'{i["id"]} | {i["name"]} | {i["employer"]} | {i["salary"]}'
-                f' | опыт: {EXP_LABEL.get(i.get("experience"), "?")}'
+                f'{i["id"]} | {i["name"]}'
                 for i in chunk
             )
             content = self._chat_retrying(
@@ -777,7 +796,21 @@ class LLMClient(StreamingLLMClient):
                     excluded = None
             if excluded is None:
                 excluded = set()  # не разобрали ответ — ничего не отсеиваем
-            survivors |= chunk_ids - excluded
+            protected = {i['id'] for i in chunk if re.search(
+                r'координатор|администратор|ассистент|помощник|аналитик|поддержк|проект|проджект|продукт|'
+                r'сопровожд|инженер|техническ\w*\s+писател|заявк|офис|закуп|'
+                r'информационн\w*\s+безопасност|кибербезопасност|'
+                r'coordinat|admin|assistant|analyst|support|project|product|junior|стаж[её]р',
+                i['name'], re.I)}
+            # A small model's exclusion is only advisory. Unknown professions
+            # must survive even if the model confidently names their IDs.
+            clearly_unrelated = {i['id'] for i in chunk if re.search(
+                r'повар|врач|медсестр|\bводител|курьер|грузчик|сварщик|визажист|'
+                r'парикмахер|уборщик|кадров|рекрут|маркетинг|маркетолог|'
+                r'бренд.менеджер|блогер|\bugc\b|суперинтендант|\bteacher\b',
+                i['name'], re.I)}
+            excluded &= clearly_unrelated
+            survivors |= (chunk_ids - excluded) | protected
         return survivors
 
     _VERDICTS = {"STRONG_MATCH", "MATCH", "WEAK", "REJECT", "REVIEW"}
@@ -1004,6 +1037,14 @@ class Worker(threading.Thread):
         hh = HHClient(self.log)
         llm = LLMClient(cfg["lm_url"], cfg["lm_model"], self.log,
                         self.stop_event)
+        llm.reasoning_effort = cfg.get('lm_reasoning_effort', 'none')
+        manager = None
+        fast_name = cfg.get("lm_model_fast", "").strip()
+        if cfg.get('manage_local_models'):
+            manager = LocalModelManager(cfg['lm_url'],
+                [llm.model, fast_name if cfg['triage'] else ''], self.log,
+                self.stop_event, cfg.get('model_gpu', {}), cfg.get('model_context', 8192))
+            llm.manager = manager
 
         self.log("Проверяю связь с LM Studio…")
         model = llm.check()
@@ -1013,11 +1054,12 @@ class Worker(threading.Thread):
         if cfg["triage"] and fast_name:
             llm_fast = LLMClient(cfg["lm_url"], fast_name, self.log,
                                  self.stop_event)
+            llm_fast.manager = manager
             self.log(f"Модель отсева: {llm_fast.check()}")
 
         profile_hash = evaluation_fingerprint(
             self.profile, cfg, llm.model, llm_fast.model,
-            [SYSTEM_PROMPT, TRIAGE_PROMPT, FACT_PROMPT, "evidence-rules-v1"])
+            [SYSTEM_PROMPT, TRIAGE_PROMPT, FACT_PROMPT, "evidence-rules-v2"])
         self.store = EvaluationStore(os.path.join(CACHE_DIR, "evaluations.sqlite3"),
                                      profile_hash)
         writer = ResultWriter(profile_hash)
@@ -1026,8 +1068,9 @@ class Worker(threading.Thread):
         attempted = set()  # Failed/incomplete entries retry on the next launch.
         self._write_top(writer, cfg)
         last_top_update = time.monotonic()
-        self.log("Учёт вакансий: версия профиля, правил и моделей. "
-                 "Старый seen_ids.json сохранён, но не блокирует переоценку.")
+        self.log(f"Уже завершено с текущими правилами и моделями: {len(seen)} вакансий — "
+                 "их повторно не проверяю. После изменения правил или модели "
+                 "вакансии оцениваются заново; старая история сохраняется.")
         area = AREAS.get(cfg["area"], "113")
         experience = EXPERIENCE.get(cfg["experience"], "")
         queries = [q.strip() for q in cfg["queries"].splitlines() if q.strip()]
@@ -1121,12 +1164,14 @@ class Worker(threading.Thread):
             raise RuntimeError("Нет доступных источников: проверьте настройки поиска и рекомендации.")
 
         while True:
+            pending = []
+            queued_ids = set()
+            self.log("Собираю вакансии и проверяю названия…")
             for qi, (label, source) in enumerate(passes):
                 if self.stop_event.is_set():
                     break
                 self.log(f"— Источник {qi + 1}/{len(passes)}: {label}")
-                src_skipped, src_checked, src_suitable = (
-                    skipped_count, checked, suitable_count)
+                src_skipped = skipped_count
                 src_new = 0
 
                 src_kind = source.get("source")
@@ -1170,7 +1215,8 @@ class Worker(threading.Thread):
                         self.log("Больше вакансий нет.")
                         break
                     new_items = list({i["id"]: i for i in items
-                                      if i["id"] not in seen and i["id"] not in attempted}.values())
+                                      if i["id"] not in seen and i["id"] not in attempted
+                                      and i["id"] not in queued_ids}.values())
                     src_new += len(new_items)
                     self.log(f"Страница {page + 1}: всего {len(items)}, "
                              f"новых {len(new_items)}")
@@ -1249,105 +1295,108 @@ class Worker(threading.Thread):
                     self.q.put(("stats",
                                 (skipped_count, checked, suitable_count)))
 
-                    # Ступень 3: полная проверка с описанием вакансии.
-                    for item in kept:
-                        if self.stop_event.is_set():
-                            break
-                        self.pause()
-                        if self.stop_event.is_set():
-                            break
-
-                        attempted.add(item["id"])
-                        try:
-                            if item["id"].startswith("habr-"):
-                                desc_client = habr
-                            elif item["id"].startswith("sj-"):
-                                desc_client = superjob
-                            elif item["id"].startswith("tg-"):
-                                desc_client = telegram
-                            else:
-                                desc_client = hh
-                            description = desc_client.description(
-                                item["url"])
-                        except (requests.RequestException, RuntimeError, ValueError) as e:
-                            self._record_issue(writer, item, "incomplete", str(e))
-                            continue
-                        if not description.strip():
-                            self._record_issue(writer, item, "incomplete",
-                                               "Описание не найдено; нужна повторная загрузка.")
-                            continue
-
-                        checked += 1
-                        vacancy_text = (
-                            f"Должность: {item['name']}\n"
-                            f"Компания: {item['employer']}\n"
-                            f"Зарплата: {item['salary']}\n"
-                            f"Тег HH (не требование из описания): "
-                            f"{EXP_LABEL.get(item.get('experience'), 'не указан')}"
-                            f"\n\nОписание: {description}"
-                        )
-
-                        self.log(f"Оцениваю: {item['name']} "
-                                 f"({item['employer']})…")
-                        saved_description = audit_path(CACHE_DIR, profile_hash, item, vacancy_text)
-                        save_audit(saved_description, item, vacancy_text, profile_hash,
-                                   llm.model, self.profile, status="pending")
-                        try:
-                            verdict, score, direction, reason, resume = (
-                                llm.evaluate(self.profile, vacancy_text))
-                        except (EvaluationExhausted, requests.RequestException, RuntimeError) as e:
-                            save_audit(saved_description, item, vacancy_text, profile_hash,
-                                       llm.model, self.profile, status="failed", error=str(e))
-                            if self.stop_event.is_set():
-                                break
-                            self._record_issue(writer, item, "failed", str(e))
-                            continue
-
-                        save_audit(saved_description, item, vacancy_text, profile_hash,
-                                   llm.model, self.profile, status="evaluated",
-                                   evidence=getattr(llm, "last_evidence", None))
-                        suitable = None if verdict == "REVIEW" else verdict != "REJECT"
-                        if suitable:
-                            suitable_count += 1
-                        writer.write(item, score, verdict, direction,
-                                     resume, reason, suitable)
-                        self.store.mark(item["id"], "evaluated", reason)
-                        seen.add(item["id"])
-                        if time.monotonic() - last_top_update >= 30:
-                            self._write_top(writer, cfg)
-                            last_top_update = time.monotonic()
-                        self.q.put(("result", {
-                            "score": score, "verdict": verdict,
-                            "direction": direction, "resume": resume,
-                            "name": item["name"],
-                            "employer": item["employer"],
-                            "salary": item["salary"], "url": item["url"],
-                            "suitable": suitable, "reason": reason,
-                        }))
-                        self.q.put(("stats",
-                                    (skipped_count, checked, suitable_count)))
-
-                        processed_since_break += 1
-                        if processed_since_break >= 10:
-                            processed_since_break = 0
-                            rest = random.uniform(15, 30)
-                            self.log(f"Длинная пауза {rest:.0f} с "
-                                     "(человеческий темп)…")
-                            end = time.time() + rest
-                            while (time.time() < end
-                                   and not self.stop_event.is_set()):
-                                time.sleep(0.2)
+                    pending.extend(kept)
+                    queued_ids.update(i["id"] for i in kept)
 
                     if page >= last_page:
                         break
                     self.pause()
 
-                self.log(f"Итог источника «{label}»: новых {src_new}, "
-                         f"отсеяно {skipped_count - src_skipped}, "
-                         f"проверено {checked - src_checked}, "
-                         f"подходящих {suitable_count - src_suitable}.")
+                self.log(f"Сбор источника «{label}»: новых {src_new}, "
+                         f"отсеяно {skipped_count - src_skipped}.")
                 if qi + 1 < len(passes):
                     self.pause()
+
+            self.log(f"Сбор завершён. Полная проверка: {len(pending)} вакансий.")
+            # One evaluation stage avoids reloading the large model per page.
+            for item in pending:
+                if self.stop_event.is_set():
+                    break
+                self.pause()
+                if self.stop_event.is_set():
+                    break
+
+                attempted.add(item["id"])
+                try:
+                    if item["id"].startswith("habr-"):
+                        desc_client = habr
+                    elif item["id"].startswith("sj-"):
+                        desc_client = superjob
+                    elif item["id"].startswith("tg-"):
+                        desc_client = telegram
+                    else:
+                        desc_client = hh
+                    description = desc_client.description(
+                        item["url"])
+                except (requests.RequestException, RuntimeError, ValueError) as e:
+                    self._record_issue(writer, item, "incomplete", str(e))
+                    continue
+                if not description.strip():
+                    self._record_issue(writer, item, "incomplete",
+                                       "Описание не найдено; нужна повторная загрузка.")
+                    continue
+
+                checked += 1
+                vacancy_text = (
+                    f"Должность: {item['name']}\n"
+                    f"Компания: {item['employer']}\n"
+                    f"Зарплата: {item['salary']}\n"
+                    f"Тег HH (не требование из описания): "
+                    f"{EXP_LABEL.get(item.get('experience'), 'не указан')}"
+                    f"\n\nОписание: {description}"
+                )
+
+                self.log(f"Оцениваю: {item['name']} "
+                         f"({item['employer']})…")
+                saved_description = audit_path(CACHE_DIR, profile_hash, item, vacancy_text)
+                save_audit(saved_description, item, vacancy_text, profile_hash,
+                           llm.model, self.profile, status="pending")
+                try:
+                    verdict, score, direction, reason, resume = (
+                        llm.evaluate(self.profile, vacancy_text))
+                except (EvaluationExhausted, requests.RequestException, RuntimeError) as e:
+                    save_audit(saved_description, item, vacancy_text, profile_hash,
+                               llm.model, self.profile, status="failed", error=str(e))
+                    if self.stop_event.is_set():
+                        break
+                    self._record_issue(writer, item, "failed", str(e))
+                    continue
+
+                save_audit(saved_description, item, vacancy_text, profile_hash,
+                           llm.model, self.profile, status="evaluated",
+                           evidence=getattr(llm, "last_evidence", None))
+                suitable = None if verdict == "REVIEW" else verdict != "REJECT"
+                if suitable:
+                    suitable_count += 1
+                writer.write(item, score, verdict, direction,
+                             resume, reason, suitable)
+                self.store.mark(item["id"], "evaluated", reason)
+                seen.add(item["id"])
+                if time.monotonic() - last_top_update >= 30:
+                    self._write_top(writer, cfg)
+                    last_top_update = time.monotonic()
+                self.q.put(("result", {
+                    "score": score, "verdict": verdict,
+                    "direction": direction, "resume": resume,
+                    "name": item["name"],
+                    "employer": item["employer"],
+                    "salary": item["salary"], "url": item["url"],
+                    "suitable": suitable, "reason": reason,
+                }))
+                self.q.put(("stats",
+                            (skipped_count, checked, suitable_count)))
+
+                processed_since_break += 1
+                if processed_since_break >= 10:
+                    processed_since_break = 0
+                    rest = random.uniform(15, 30)
+                    self.log(f"Длинная пауза {rest:.0f} с "
+                             "(человеческий темп)…")
+                    end = time.time() + rest
+                    while (time.time() < end
+                           and not self.stop_event.is_set()):
+                        time.sleep(0.2)
+
 
             self._write_top(writer, cfg)
             self.log(

@@ -32,6 +32,9 @@ FACT_PROMPT = '''Извлеки факты из пронумерованных �
 level: senior только явный обязательный Middle/Senior/Lead/руководитель отдела; не выводи его из количества навыков.
 experience: required только обязательный коммерческий/профильный стаж, а не тег HH.
 tools — опыт с Jira/Excel и другими инструментами; optional — явно желателен; no_experience — прямо допускаются новички.
+Обязательно учитывай заголовок раздела: «Наши пожелания», «Будет плюсом» и «Будет преимуществом» делают последующие пункты желательными до следующего раздела.
+Если в требованиях есть опыт в должности, а ниже другой опыт желателен, выбирай обязательный. Опыт в должности не обязан содержать число лет.
+В experience не используй тег HH. Название «начинающий» и обучение не отменяют обязательный опыт в требованиях.
 Наставничество и адаптация НЕ означают no_experience. Цитата должна включать обязательность/срок либо исключение.
 it: yes — IT-компания или IT-функция, no — явно другая сфера без IT-функции; при сомнении unknown.
 role: основные задачи: project/implementation — координация; support — настройка/поддержка; other — иная деятельность.
@@ -96,6 +99,43 @@ def normalize(text):
     return re.sub(r'\s+', ' ', text).strip()
 
 
+def experience_evidence(source):
+    """Read explicit role experience in its section, independently of model choice.
+
+    Tool familiarity is deliberately excluded; a missing requirement is not
+    evidence that an employer accepts beginners.
+    """
+    optional = False
+    found = []
+    for line in source.split('Описание:', 1)[-1].splitlines():
+        q = line.strip().lower()
+        if not q:
+            continue
+        if re.search(r'^(?:наши\s+)?пожелания|^будет\s+(?:большим\s+)?(?:плюсом|преимуществом)|^nice.to.have', q):
+            optional = True
+        elif re.search(r'^(?:наши\s+)?требования|^что\s+(?:мы\s+)?(?:ожидаем|жд[её]м)|^что\s+(?:для\s+нас\s+)?важно|^кого\s+мы\s+ищем|^requirements|^we need|^обязанности|^условия|^мы предлагаем|^задачи', q):
+            optional = False
+        has_exp = bool(re.search(r'опыт|\bexperience\b', q))
+        role = bool(re.search(
+            r'коммерческ|аналогичн|схож\w*\s+позици|на\s+позици|в\s+роли|'
+            r'опыт\s+(?:работы\s+)?(?:ассистент|бизнес.ассистент|координатор|'
+            r'администратор|менеджер|руководител|project|business\s+assistant)|'
+            r'опыт\s+работы\s+в\s+(?:техническ\w*\s+поддержк|digital|маркетинг|it\b|ит\b)|'
+            r'опыта\s+в\s+проектн|с\s+опытом\s*[-—:]\s*системн|'
+            r'с\s+опытом\s+самостоятельн\w*\s+работы\s+рядом\s+с\s+собственник|'
+            r'experience\s+(?:as\s+a|working\s+with\s+preschoolers)', q))
+        if not has_exp or not role:
+            continue
+        desired = optional or bool(re.search(r'желател|плюс|преимуществ|не\s+обязател|не\s+требу|без\s+опыта|preferred|optional', q))
+        found.append(('optional' if desired else 'required', line.strip()))
+    return found
+
+
+def optional_quote(quote, source):
+    return any(value == 'optional' and normalize(line) == normalize(quote)
+               for value, line in experience_evidence(source))
+
+
 def salary_state(quote):
     text = quote.lower().replace('\xa0', ' ').replace('\u202f', ' ')
     if 'на руки' not in text or not re.search(r'руб|₽|\brur\b|\brub\b', text):
@@ -139,7 +179,7 @@ def verify_facts(data, source):
             supported = True
             if key == 'experience':
                 if value == 'required':
-                    supported = bool(required_experience(quote) or (
+                    supported = not optional_quote(quote, source) and bool(required_experience(quote) or (
                         re.search(r'опыт\s+работы\s+в\s+(?:digital|маркетинг|it|ит|web|проектн)', q)
                         and re.search(r'обязател|от\s+\d+\s*(?:лет|год)', q)
                         and not re.search(r'не\s+обязател|желател|плюс|преимуществ', q)) or (
@@ -152,14 +192,24 @@ def verify_facts(data, source):
                 elif value == 'no_experience':
                     supported = bool(re.search(r'без\s+(?:коммерческого\s+)?опыта|опыт[^.!\n]{0,35}не\s+(?:требуется|обязателен)', q))
                 elif value == 'optional':
-                    supported = bool(re.search(r'желател|будет\s+плюсом|преимуществ|не\s+обязател', q))
+                    supported = optional_quote(quote, source) or bool(re.search(r'желател|будет\s+плюсом|преимуществ|не\s+обязател|приветствуется', q))
             elif key == 'level' and value == 'senior':
                 supported = bool(explicit_seniority(quote if q.startswith('должность:') else '', quote)
                                  or re.search(r'руководител[ья]\s+(?:отдела|группы|департамента)|\blead\b', q))
                 if re.search(r'наставник|ментор|рост|расти|коллег|взаимодейств', q):
                     supported = False
             elif key == 'skills' and value == 'advanced':
-                supported = bool(re.search(r'глубок|эксперт|продвинут|самостоятельн', q))
+                supported = bool(re.search(r'глубок|эксперт|продвинут', q))
+            elif key == 'role' and value != 'other':
+                patterns = {
+                    'project': r'проект|project|pmo|координ|совещан|протокол|срок|поручен',
+                    'implementation': r'внедрен|implementation|интеграц',
+                    'support': r'поддерж|support|обращен|пользоват|заявк|helpdesk|service\s*desk|бот|сопровожд',
+                    'admin': r'системн\w*\s+администратор|сервер|linux|windows|инфраструктур|уч[её]тн\w*\s+запис',
+                    'qa': r'тест|\bqa\b|quality|баг',
+                    'data': r'аналит|данных|\bdata\b|\bsql\b|отч[её]т',
+                }
+                supported = bool(re.search(patterns[value], q))
             elif key == 'contract' and value == 'tk':
                 supported = bool(re.search(r'\bтк\b|трудов\w*\s+(?:кодекс|договор)', q)
                                  and not re.search(r'не\s+оформ|без\s+(?:тк|трудов)|не\s+предусмотр', q))
@@ -182,7 +232,7 @@ def verify_facts(data, source):
                 supported = bool(re.search(r'писать\s+код|разработк\w*\s+(?:по|программ|приложен|сервис)|программирован', q)
                                  and not re.search(r'не\s+(?:нужно|требуется)|без\s+программ|взаимодейств|координ|контрол', q))
             elif key == 'it':
-                technical = re.search(r'\bit\b|\bит\b|софт|программно|информационн\w*\s+систем|'
+                technical = re.search(r'\bit\b|\bит\b|софт|программно|цифров\w*\s+(?:сервис|продукт)|информационн\w*\s+(?:систем|технолог)|системн\w*\s+администратор|'
                                       r'разработ\w*\s+(?:приложен|сайт|по\b)|робототех|видеоаналит', q)
                 if value == 'yes':
                     supported = bool(technical)
@@ -190,10 +240,30 @@ def verify_facts(data, source):
                     supported = bool(re.search(r'строитель|недвижим|маркетинг|реклам|розничн|'
                                                r'клининг|рестора|мероприяти|торговл|маркетплейс', q)
                                      and not technical)
+                    if re.search(r'(?:\bIT\b|\bИТ\b)[ -]?(?:отдел|проект|решени)|цифров\w*\s+сервис', source, re.I):
+                        supported = False  # A non-IT employer can have an IT role.
             if not supported:
                 issues.append(f'{key}: цитата не подтверждает заявленный факт')
                 value, quote = 'unknown', ''
         verified[key] = {'value': value, 'quote': quote if value != 'unknown' else ''}
+    experience = experience_evidence(source)
+    required = [quote for value, quote in experience if value == 'required']
+    explicit_novice = re.search(r'без\s+(?:коммерческого\s+)?опыта|опыт\s+работы\s+не\s+(?:требуется|обязателен)', description, re.I)
+    if required and explicit_novice:
+        verified['experience'] = dict(value='unknown', quote='')
+        issues = [issue for issue in issues if not issue.startswith('experience:')]
+        issues.append('experience: противоречие между обязательным опытом и допуском без опыта')
+    elif required:
+        verified['experience'] = dict(value='required', quote=required[0])
+        issues = [issue for issue in issues if not issue.startswith('experience:')]
+    elif optional_quote(data.get('experience', {}).get('quote', ''), source):
+        verified['experience'] = dict(value='optional', quote=data['experience']['quote'])
+        issues = [issue for issue in issues if not issue.startswith('experience:')]
+    for line in source.splitlines():
+        if explicit_seniority(line if line.startswith('Должность:') else '', line):
+            verified['level'] = dict(value='senior', quote=line.strip())
+            issues = [issue for issue in issues if not issue.startswith('level:')]
+            break
     return verified, issues
 
 
@@ -217,9 +287,11 @@ def decide(facts, issues):
         return 'REJECT', 0, direction, f'Ниже 40 000 ₽ на руки в месяц. Цитата: «{facts["salary"]["quote"]}»', resume
     # A separately verified hard stop stands even if an unrelated field was invalid.
     questions = []
-    for key, label in [('it', 'IT-контекст'), ('role', 'содержание роли'), ('contract', 'оформление по ТК')]:
+    for key, label in [('it', 'IT-контекст'), ('role', 'содержание роли')]:
         if value(key) == 'unknown': questions.append(label)
-    if salary == 'unknown': questions.append('зарплата на руки за месяц')
+    clarifications = []
+    if value('contract') == 'unknown': clarifications.append('оформление по ТК')
+    if salary == 'unknown': clarifications.append('зарплата на руки за месяц')
     if value('travel') == 'rare': questions.append('частота и длительность редких поездок')
     if value('skills') == 'advanced': questions.append('глубина необходимых навыков: «'+facts['skills']['quote']+'»')
     if value('role') == 'other': questions.append('соответствие роли карьерным направлениям')
@@ -228,12 +300,14 @@ def decide(facts, issues):
                   'role':'содержание работы','skills':'уровень навыков','contract':'оформление',
                   'night':'ночные смены','relocation':'переезд','travel':'поездки','sales':'продажи',
                   'development':'разработка','bpmn':'моделирование процессов','salary':'зарплата'}
-        questions.extend(labels.get(issue.split(':')[0],issue) + ' — вывод модели не подтверждён цитатой' for issue in issues)
+        questions.extend(labels.get(issue.split(':')[0],issue) + ' — вывод модели не подтверждён цитатой' for issue in issues if issue.split(':')[0] not in {'contract', 'salary'})
     if questions:
         return 'REVIEW', 0, direction, 'Нужно уточнить: ' + '; '.join(questions), resume
     reserve = value('role') in {'support', 'admin', 'data', 'qa'}
-    verdict, score = ('WEAK', 50) if reserve else ('MATCH', 80)
-    return verdict, score, direction, ('Запасное направление' if reserve else 'Проектное направление') + '. Задачи: «' + facts['role']['quote'] + '»', resume
+    verdict, score = ('WEAK', 50) if reserve else ('MATCH', 65 if clarifications else 80)
+    reason = ('Запасное направление' if reserve else 'Проектное направление') + '. Задачи: «' + facts['role']['quote'] + '»'
+    if clarifications: reason += '. Уточнить у работодателя: ' + '; '.join(clarifications)
+    return verdict, score, direction, reason, resume
 
 
 def audit_path(folder, version, item, source):

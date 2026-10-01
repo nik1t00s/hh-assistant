@@ -42,7 +42,8 @@ def read_json(path, default=None):
 def evaluation_fingerprint(profile, cfg, model, fast_model, prompts):
     # Bump this version when parser or deterministic filtering semantics change.
     rules = {key: cfg.get(key) for key in
-             ("exclude_words", "include_words", "exclude_companies", "exp_filter", "triage")}
+             ("exclude_words", "include_words", "exclude_companies", "exp_filter", "triage",
+              "lm_reasoning_effort", "model_context")}
     payload = [2, profile, rules, model, fast_model, prompts]
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False,
                                     sort_keys=True).encode()).hexdigest()

@@ -55,7 +55,8 @@ class EvidenceTests(unittest.TestCase):
             data[field] = dict(value=value,quote=quote)
         source='\n'.join(f['quote'] for f in data.values())
         facts,issues=verify_facts(data,source)
-        self.assertEqual(decide(facts,issues)[0],'REVIEW')
+        self.assertEqual(decide(facts,issues)[0],'MATCH')
+        self.assertIn('Уточнить у работодателя',decide(facts,issues)[3])
         data['contract']=dict(value='tk',quote='Оформление по ТК РФ')
         source+='\nОформление по ТК РФ'
         facts,issues=verify_facts(data,source)

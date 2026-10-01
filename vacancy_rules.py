@@ -140,6 +140,10 @@ def explicit_seniority(title, description):
         if re.search(r'рост|расти|выраст|дораст|наставник|коллег|ментор|взаимодейств|'
                      r'не\s+(?:требуется|нужен|ниже)|необязател|не\s+обязател', clause):
             continue
+        # A team's grade is not a requirement for the applicant. Keep explicit hiring clauses.
+        if re.search(r'команд|отдел|разработчик|сотрудник', clause) and not re.search(
+                r'ищем|требуется|нужен|кандидат|ваш\s+(?:уровень|грейд)|вас.*(?:уровень|грейд)', clause):
+            continue
         if any(re.search(pattern, clause) for pattern in patterns):
             return 'в описании явно указан Middle/Senior-уровень'
     return None

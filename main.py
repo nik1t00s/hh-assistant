@@ -674,7 +674,10 @@ class LLMClient(StreamingLLMClient):
             try:
                 content = self._chat_retrying(
                     FACT_PROMPT + '\nПовторная проверка. Исправь ссылки на строки и учитывай разделы. '
-                    'Неподтверждённые поля: ' + ', '.join(i.split(':')[0] for i in issues),
+                    'Неподтверждённые поля: ' + ', '.join(i.split(':')[0] for i in issues) +
+                    '. Не повторяй ошибочную классификацию. Опыт с инструментами — tools; '
+                    'наставничество не означает no_experience. Вот предыдущий ответ: ' +
+                    json.dumps(raw, ensure_ascii=False),
                     numbered, temperature=0.1, max_tokens=4000, validator=valid_facts)
                 repaired = parse_facts(content)
                 for key in {i.split(':')[0] for i in issues}:
@@ -1059,7 +1062,7 @@ class Worker(threading.Thread):
 
         profile_hash = evaluation_fingerprint(
             self.profile, cfg, llm.model, llm_fast.model,
-            [SYSTEM_PROMPT, TRIAGE_PROMPT, FACT_PROMPT, "evidence-rules-v2"])
+            [SYSTEM_PROMPT, TRIAGE_PROMPT, FACT_PROMPT, "evidence-rules-v3"])
         self.store = EvaluationStore(os.path.join(CACHE_DIR, "evaluations.sqlite3"),
                                      profile_hash)
         writer = ResultWriter(profile_hash)

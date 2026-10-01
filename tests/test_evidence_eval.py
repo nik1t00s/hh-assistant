@@ -22,7 +22,7 @@ class EvidenceTests(unittest.TestCase):
     def test_tracker_experience_and_hh_tag_are_not_commercial_experience(self):
         data = blank();data['experience'] = dict(value='required', quote='Опыт работы с Jira и Confluence')
         facts, issues = verify_facts(data, 'Описание: Опыт работы с Jira и Confluence')
-        self.assertEqual(facts['experience']['value'], 'unknown')
+        self.assertEqual(facts['experience']['value'], 'tools')
         self.assertEqual(decide(facts, issues)[0], 'REVIEW')
         data['experience']['quote'] = 'Тег HH: опыт работы в аналогичной должности от года'
         facts, issues = verify_facts(data, data['experience']['quote']+'\nОписание: Обучение с нуля')

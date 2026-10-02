@@ -103,6 +103,7 @@ def normalize(text):
 def requirement_items(source):
     """Attach section context to source items; never infer requirements from the company bio."""
     section = 'unspecified'
+    experience_prefix = ''
     for line in source.split('Описание:', 1)[-1].splitlines():
         quote = line.strip()
         q = re.sub(r'[\u200b-\u200f\ufeff]', '', quote.lower()).lstrip('-•— ').rstrip(': .')
@@ -121,10 +122,16 @@ def requirement_items(source):
             heading = 'unspecified'
         if heading:
             section = heading
+            experience_prefix = ''
             # A heading and an item may share a line.
             if ':' not in quote or not quote.split(':', 1)[1].strip():
+                if quote.endswith(':') and re.search(r'опыт\s+работы', q):
+                    experience_prefix = quote
                 continue
             quote = quote.split(':', 1)[1].strip()
+        if experience_prefix:
+            quote = experience_prefix + '\n' + quote
+            experience_prefix = ''
         # Semicolons delimit separate requirements; an optional tool in the next
         # item must not cancel mandatory employment experience in this one.
         for clause in quote.split(';'):
@@ -145,7 +152,7 @@ def experience_evidence(source):
             r'желател|приветству|будет.*(?:плюс|преимуществ)|не\s+обязател|не\s+требу|preferred|optional', q))
         role = bool(re.search(
             r'коммерческ|аналогичн|схож\w*\s+позици|на\s+позици|в\s+роли|'
-            r'опыт\s+(?:работы\s+)?(?:ассистент|бизнес.ассистент|координатор|консультант|'
+            r'опыт\s+(?:работы\s*:?\s*)?(?:аналитик|инженер\w*\s+внедрен|ассистент|бизнес.ассистент|координатор|консультант|'
             r'специалист|системн\w*\s+администратор|администратор|менеджер|руководител|project)|'
             r'опыт\s+работы\s+в\s+(?:сфере|области|техническ\w*\s+поддержк|digital|маркетинг|it\b|ит\b)|'
             r'опыта\s+в\s+проектн|с\s+опытом\s*[-—:]\s*системн|'
@@ -223,12 +230,16 @@ def verify_facts(data, source):
                                  or re.search(r'руководител[ья]\s+(?:отдела|группы|департамента)|\blead\b', q))
                 if re.search(r'наставник|ментор|рост|расти|коллег|взаимодейств', q):
                     supported = False
-            elif key == 'skills' and value == 'advanced':
-                supported = bool(re.search(r'глубок|эксперт|продвинут', q))
-                if not supported and re.search(r'уверенн|свободн', q) and re.search(r'знани|владен|опыт|ориентир|использован', q):
-                    value, supported = 'working', True
-            elif key == 'skills' and value == 'working':
-                supported = bool(re.search(r'уверенн|свободн|рабоч\w*\s+уров', q) and re.search(r'знани|владен|опыт|ориентир|использован|навык', q))
+            elif key == 'skills':
+                # Grade the actual skill statement, not the model's adjective.
+                if re.search(r'глубок|эксперт|продвинут', q):
+                    value = 'advanced'
+                elif re.search(r'базов|обучени\w*\s+с\s+нуля|всему\s+научим', q):
+                    value = 'basic'
+                elif re.search(r'знани|знать|пониман|владен|навык|уме(?:ет|ние|ть)|опыт\s+(?:работы\s+с|использован)|как\s+работать|использован|ориентир', q):
+                    value = 'working'
+                else:
+                    supported = False
             elif key == 'role' and value != 'other':
                 patterns = {
                     'project': r'проект|project|pmo|координ|совещан|протокол|срок|поручен|синхрониз.*кросс.функциональн',
@@ -310,6 +321,11 @@ def verify_facts(data, source):
                 verified['it'] = dict(value='yes', quote=quote)
                 issues = [i for i in issues if not i.startswith('it:')]
                 break
+    for section, quote in requirement_items(source):
+        if section == 'duties' and re.search(r'экспертн\w*\s+поддержк', quote, re.I):
+            verified['skills'] = dict(value='advanced', quote=quote)
+            issues = [i for i in issues if not i.startswith('skills:')]
+            break
     for line in source.splitlines():
         if explicit_seniority(line if line.startswith('Должность:') else '', line):
             verified['level'] = dict(value='senior', quote=line.strip())

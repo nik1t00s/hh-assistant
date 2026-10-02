@@ -42,7 +42,7 @@ def read_json(path, default=None):
 def evaluation_fingerprint(profile, cfg, model, fast_model, prompts):
     # Bump this version when parser or deterministic filtering semantics change.
     rules = {key: cfg.get(key) for key in
-             ("exclude_words", "include_words", "exclude_companies", "exp_filter", "triage",
+             ("decision_policy", "exclude_words", "include_words", "exclude_companies", "exp_filter", "triage",
               "lm_reasoning_effort", "model_context")}
     payload = [2, profile, rules, model, fast_model, prompts]
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False,
@@ -81,3 +81,74 @@ class EvaluationStore:
 
     def close(self):
         self.db.close()
+
+
+class SearchCache:
+    """Independent durable queue and content-addressed extraction cache."""
+    def __init__(self, path):
+        self.db = sqlite3.connect(path, timeout=10)
+        self.db.execute("CREATE TABLE IF NOT EXISTS pending(scope TEXT, id TEXT, item TEXT, created TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(scope,id))")
+        self.db.execute("CREATE TABLE IF NOT EXISTS facts(key TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS actions(url TEXT PRIMARY KEY, status TEXT NOT NULL)")
+        self.db.commit()
+
+    def enqueue(self, scope, items):
+        with self.db:
+            self.db.executemany("INSERT OR IGNORE INTO pending(scope,id,item) VALUES(?,?,?)",
+                [(scope, i['id'], json.dumps(i, ensure_ascii=False)) for i in items])
+
+    def pending(self, scope):
+        return [json.loads(r[0]) for r in self.db.execute("SELECT item FROM pending WHERE scope=? ORDER BY created,rowid", (scope,))]
+
+    def remove(self, scope, vid):
+        with self.db:
+            self.db.execute("DELETE FROM pending WHERE scope=? AND id=?", (scope, vid))
+
+    def get_facts(self, key):
+        row = self.db.execute("SELECT payload FROM facts WHERE key=?", (key,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def put_facts(self, key, payload):
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO facts VALUES(?,?)", (key,json.dumps(payload,ensure_ascii=False)))
+
+    def set_action(self, url, status):
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO actions VALUES(?,?)", (url,status))
+
+    def action(self, url):
+        row=self.db.execute("SELECT status FROM actions WHERE url=?", (url,)).fetchone()
+        return row[0] if row else 'Не просмотрено'
+
+    def close(self):
+        self.db.close()
+
+
+def search_scope(cfg, version):
+    # Source/filter changes must not revive a queue from a different search.
+    keys = ('queries','role_ids','area','experience','exp_filter','remote_only',
+            'remote_extra','only_with_salary','search_mode','recs_enabled',
+            'hh_resume_only','resume_hash','telegram_channels','habr_enabled',
+            'telegram_enabled','superjob_enabled')
+    return hashlib.sha256(json.dumps([version,{k:cfg.get(k) for k in keys}],
+        sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+
+
+def extraction_key(source, model, prompt, schema, reasoning, context):
+    return hashlib.sha256(json.dumps([source,model,prompt,schema,reasoning,context],
+        sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+
+
+def prioritize(items):
+    """Interleave uncertain entries to avoid starving less obvious titles."""
+    import re
+    primary, other = [], []
+    for item in items:
+        target = primary if re.search(r'координатор|ассистент|проект|project|pmo|внедрен', item['name'], re.I) else other
+        target.append(item)
+    primary.sort(key=lambda i: i.get('experience') != 'noExperience')
+    result=[]
+    while primary or other:
+        result.extend(primary[:4]); del primary[:4]
+        result.extend(other[:1]); del other[:1]
+    return result

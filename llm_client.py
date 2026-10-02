@@ -1,5 +1,6 @@
 """Shared LM Studio transport for both applications."""
 import json
+import time
 import re
 import requests
 import os
@@ -119,6 +120,7 @@ class StreamingLLMClient:
         frequency_penalty штрафует повторы — снижает риск, что модель
         зациклится и сожжёт весь max_tokens, ни разу не дав ответ
         (редкий, но воспроизводимый сбой у квантованных моделей)."""
+        request_started = time.monotonic()
         if getattr(self, 'manager', None):
             self.manager.activate(self.model)
         payload = {
@@ -187,6 +189,10 @@ class StreamingLLMClient:
                 self.last_reasoning_chars += len(choice.get('delta', {}).get('reasoning_content') or '')
                 if piece:
                     pieces.append(piece)
+        if not hasattr(self, 'request_metrics'):
+            self.request_metrics = []
+        self.request_metrics.append(dict(seconds=time.monotonic()-request_started,
+            usage=self.last_usage, finish=self.last_finish))
         self.last_chunks = chunk_count
         return self._clean("".join(pieces))
 

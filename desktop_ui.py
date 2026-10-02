@@ -1,4 +1,5 @@
 """Desktop presentation, separate from search and evaluation logic."""
+from evidence_eval import DEFAULT_POLICY
 from browser_queue import group_vacancies, variants
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -288,6 +289,12 @@ class DesktopUI:
         self.detail_title.pack(anchor="w", pady=(12, 8))
         self.detail_meta = label(detail, "Здесь будут условия и объяснение оценки.", 10, MUTED, wraplength=216)
         self.detail_meta.pack(anchor="w", pady=(0, 14))
+        self.action_var = tk.StringVar(value='Не просмотрено')
+        self.action_select = ttk.Combobox(detail, textvariable=self.action_var, state='readonly',
+            values=['Не просмотрено','Просмотрено','Интересно','Откликнулся','Не подходит','Ответ работодателя'])
+        self.action_select.pack(fill='x', pady=(0, 5))
+        self.action_select.bind('<<ComboboxSelected>>', lambda _: app.on_set_action(self.action_var.get()))
+        ttk.Button(detail, text='Подготовить резюме', command=app.on_tailor_selected).pack(fill='x', pady=(0, 5))
         self.variant_buttons = tk.Frame(detail, bg=PAPER)
         self.variant_buttons.pack(fill="x")
         reason_box = tk.Frame(detail, bg=PAPER)
@@ -345,6 +352,24 @@ class DesktopUI:
         self._field(section, "Стоп-слова в названии", "txt_exclude", "exclude_words")
         self._field(section, "Целевые слова · сразу на полную проверку", "txt_include", "include_words")
         self._field(section, "Компании-исключения", "txt_companies", "exclude_companies", 2)
+        section = card(body, "Критерии полной оценки", "Эти настройки определяют отказы. Текст профиля используется для контекста и резюме; изменения стоп-факторов задавай здесь.")
+        policy = dict(DEFAULT_POLICY, **a.cfg.get('decision_policy', {}))
+        self.minimum_salary = tk.StringVar(value=str(policy['minimum_net_salary']))
+        label(section, 'Минимум зарплаты на руки в месяц, ₽').pack(anchor='w')
+        ttk.Entry(section, textvariable=self.minimum_salary).pack(fill='x', pady=5)
+        self.policy_vars = {}
+        for key, title in [('level','Исключать явные Middle/Senior/руководящие позиции'),
+                ('experience','Исключать обязательный профильный или коммерческий стаж'),
+                ('it','Только IT-компания или IT-функция'),('contract','Требовать оформление по ТК'),
+                ('night','Исключать обязательные ночи'),('relocation','Исключать обязательный переезд'),
+                ('travel','Исключать регулярные выезды'),('sales','Исключать основную работу в продажах'),
+                ('development','Исключать основную разработку'),('bpmn','Исключать основное моделирование BPMN')]:
+            var=tk.BooleanVar(value=policy['reject_'+key]);self.policy_vars['reject_'+key]=var
+            ttk.Checkbutton(section,text=title,variable=var,style='Card.TCheckbutton').pack(anchor='w')
+        section = card(body, "Режим прогона", "Быстрый HH: ограниченная очередь. Расширенный: все включённые площадки. 0 проверок — без лимита.")
+        self._entry(section, "Режим", "var_search_mode", "search_mode", ['Быстрый HH', 'Расширенный'])
+        self._entry(section, "Максимум полных проверок", "var_max_checks", "max_checks")
+        self._check(section, "Завершить после одного прохода", "var_single_pass", "single_pass")
         section = card(body, "Темп поиска", "Паузы помогают снизить нагрузку на сайты.")
         for title, attr, key, cls, maximum in (("Страниц на источник", "var_pages", "pages", tk.IntVar, 100),
                                                ("Минимальная пауза, с", "var_dmin", "min_delay", tk.DoubleVar, 120),
@@ -521,8 +546,10 @@ class DesktopUI:
 
     def show_detail(self, data):
         self.detail_scroll.canvas.yview_moveto(0)
+        self.action_var.set(self.app.vacancy_action(data["url"]))
         self.detail_title.configure(text=data["name"])
-        self.detail_verdict.configure(text=VERDICTS.get(data.get("verdict"), "На проверку").upper())
+        kind = ('ПРОВЕРИТЬ РАЗБОР' if 'не подтверждён цитатой' in data.get('reason','') else 'УТОЧНИТЬ УСЛОВИЯ')
+        self.detail_verdict.configure(text=kind if data.get('verdict') == 'REVIEW' else VERDICTS.get(data.get('verdict'), 'На проверку').upper())
         self.detail_meta.configure(text=f"{data['employer']}\n{data['salary']}\n{data.get('direction') or 'Направление не определено'}")
         self.open_button.configure(state="normal")
         for child in self.variant_buttons.winfo_children():

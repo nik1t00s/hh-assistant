@@ -16,9 +16,9 @@ from datetime import datetime
 
 from llm_client import StreamingLLMClient, LocalModelManager
 from browser_queue import BrowserQueue, suitable_urls, group_vacancies, variant_details
-from evidence_eval import FACT_PROMPT, FACT_SCHEMA, parse_facts, valid_facts, verify_facts, decide, audit_path, save_audit, numbered_source, materialize
+from evidence_eval import DEFAULT_POLICY, VALUES, FACT_PROMPT, FACT_SCHEMA, parse_facts, valid_facts, verify_facts, decide, audit_path, save_audit, numbered_source, materialize
 from settings import load_settings, save_settings
-from storage import EvaluationStore, atomic_text, evaluation_fingerprint
+from storage import EvaluationStore, SearchCache, search_scope, prioritize, extraction_key, atomic_text, evaluation_fingerprint
 from vacancy_rules import (strip_html, extract_jobposting_description,
                            short_profile, score_cap, salary_cap, word_hit)
 
@@ -52,6 +52,7 @@ AREAS = {
 }
 
 EXPERIENCE = {
+    "Без опыта + 1–3 года": "entry_pair",
     "Любой": "",
     "Нет опыта": "noExperience",
     "1–3 года": "between1And3",
@@ -75,7 +76,8 @@ EXP_FILTER = {
 }
 
 # Личные настройки переопределяются локальным config.json.
-DEFAULT_CONFIG = {'role_ids': ['107', '121', '113', '110'],
+DEFAULT_CONFIG = {'decision_policy': dict(DEFAULT_POLICY), 'search_mode': 'Быстрый HH', 'max_checks': 200, 'single_pass': True,
+ 'role_ids': ['107', '121', '113', '110'],
  'split_roles': True,
  'queries': 'системный администратор\n'
             'младший системный администратор\n'
@@ -200,7 +202,7 @@ class HHClient:
 
     def _get(self, url, **kwargs):
         r = self.session.get(url, timeout=30, allow_redirects=True, **kwargs)
-        if r.status_code == 403 or "captcha" in r.url:
+        if r.status_code in (403, 429) or "captcha" in r.url:
             raise RuntimeError(
                 "hh.ru временно ограничил доступ (капча). Подождите "
                 "10–15 минут и увеличьте паузы между запросами."
@@ -657,6 +659,21 @@ class EvaluationExhausted(RuntimeError):
 class LLMClient(StreamingLLMClient):
     def evaluate(self, profile, vacancy_text):
         self.last_evidence = None
+        cache = getattr(self, 'fact_cache', None)
+        key = extraction_key(vacancy_text, self.model, FACT_PROMPT + "\nfocused-repair-v1", FACT_SCHEMA,
+                             getattr(self, 'reasoning_effort', 'none'), getattr(self, 'context_length', 8192))
+        cached = cache.get_facts(key) if cache else None
+        if cached:
+            lines, _ = numbered_source(vacancy_text)
+            facts, issues = verify_facts(materialize(cached['raw'], lines), vacancy_text)
+            result = decide(facts, issues, getattr(self, 'decision_policy', None))
+            self.last_evidence = dict(cached, verified=facts, issues=issues, result=result, cache_hit=True, elapsed_seconds=0, review_kind="extraction" if issues else "conditions")
+            self.log('Факты из кэша: решение пересчитано без генерации.')
+            return result
+        started = time.monotonic()
+        self.request_metrics = []
+        shadow_facts, shadow_issues = verify_facts({k:dict(value='unknown',quote='') for k in VALUES}, vacancy_text)
+        shadow_result = decide(shadow_facts, shadow_issues, getattr(self, 'decision_policy', None))
         lines, numbered = numbered_source(vacancy_text)
         self.response_schema = FACT_SCHEMA
         try:
@@ -669,16 +686,24 @@ class LLMClient(StreamingLLMClient):
         facts, issues = verify_facts(materialize(raw, lines), vacancy_text)
         attempts = [json.loads(json.dumps(raw))]
         # Repair unsupported evidence once; never silently accept an invalid claim.
-        if issues and decide(facts, issues)[0] == 'REVIEW':
-            self.response_schema = FACT_SCHEMA
+        if issues and decide(facts, issues, getattr(self, 'decision_policy', None))[0] == 'REVIEW':
+            repair_keys = {i.split(':')[0] for i in issues}
+            self.response_schema = dict(FACT_SCHEMA, required=sorted(repair_keys),
+                properties={k: FACT_SCHEMA['properties'][k] for k in repair_keys})
+            def valid_repair(content):
+                try:
+                    partial = parse_facts(content)
+                    return repair_keys.issubset(partial) and valid_facts(json.dumps(dict(raw, **{k:partial[k] for k in repair_keys})))
+                except (ValueError, TypeError, KeyError):
+                    return False
             try:
                 content = self._chat_retrying(
-                    FACT_PROMPT + '\nПовторная проверка. Исправь ссылки на строки и учитывай разделы. '
+                    FACT_PROMPT + '\nВерни ТОЛЬКО перечисленные неподтверждённые поля, остальные поля не генерируй. Повторная проверка. Исправь ссылки на строки и учитывай разделы. '
                     'Неподтверждённые поля: ' + ', '.join(i.split(':')[0] for i in issues) +
                     '. Не повторяй ошибочную классификацию. Опыт с инструментами — tools; '
                     'наставничество не означает no_experience. Вот предыдущий ответ: ' +
                     json.dumps(raw, ensure_ascii=False),
-                    numbered, temperature=0.1, max_tokens=4000, validator=valid_facts)
+                    numbered, temperature=0.1, max_tokens=4000, validator=valid_repair)
                 repaired = parse_facts(content)
                 for key in {i.split(':')[0] for i in issues}:
                     raw[key] = repaired[key]
@@ -686,10 +711,16 @@ class LLMClient(StreamingLLMClient):
                 facts, issues = verify_facts(materialize(raw, lines), vacancy_text)
             finally:
                 self.response_schema = None
-        result = decide(facts, issues)
-        self.last_evidence = dict(raw=raw, attempts=attempts, verified=facts, issues=issues, result=result,
+        result = decide(facts, issues, getattr(self, 'decision_policy', None))
+        self.last_evidence = dict(review_kind='extraction' if issues else 'conditions', raw=raw, attempts=attempts, verified=facts, issues=issues, result=result,
                                  usage=getattr(self, 'last_usage', None),
                                  reasoning_chars=getattr(self, 'last_reasoning_chars', 0))
+        self.last_evidence['requests'] = getattr(self, 'request_metrics', [])
+        self.last_evidence['total_tokens_all_requests'] = sum((m.get('usage') or {}).get('total_tokens', 0) for m in self.last_evidence['requests'])
+        self.last_evidence['early_check'] = shadow_result
+        self.last_evidence['elapsed_seconds'] = time.monotonic() - started
+        if cache:
+            cache.put_facts(key, self.last_evidence)
         return result
 
     @classmethod
@@ -774,6 +805,15 @@ class LLMClient(StreamingLLMClient):
         При сбое разбора ответа пачка проходит дальше целиком
         (лучше лишняя проверка, чем потеря)."""
         survivors = set()
+        protected_pattern = r'координатор|администратор|ассистент|помощник|аналитик|поддержк|проект|проджект|продукт|сопровожд|инженер|техническ\w*\s+писател|заявк|офис|закуп|информационн\w*\s+безопасност|кибербезопасност|coordinat|admin|assistant|analyst|support|project|product|junior|стаж[её]р'
+        unrelated_pattern = r'повар|врач|медсестр|\bводител|курьер|грузчик|сварщик|визажист|парикмахер|уборщик|кадров|рекрут|маркетинг|маркетолог|бренд.менеджер|блогер|\bugc\b|суперинтендант|\bteacher\b'
+        candidates = []
+        for item in items:
+            if re.search(protected_pattern, item['name'], re.I) or not re.search(unrelated_pattern, item['name'], re.I):
+                survivors.add(item['id'])
+            else:
+                candidates.append(item)
+        items = candidates
         chunk_size = 25
         for start in range(0, len(items), chunk_size):
             chunk = items[start:start + chunk_size]
@@ -799,19 +839,8 @@ class LLMClient(StreamingLLMClient):
                     excluded = None
             if excluded is None:
                 excluded = set()  # не разобрали ответ — ничего не отсеиваем
-            protected = {i['id'] for i in chunk if re.search(
-                r'координатор|администратор|ассистент|помощник|аналитик|поддержк|проект|проджект|продукт|'
-                r'сопровожд|инженер|техническ\w*\s+писател|заявк|офис|закуп|'
-                r'информационн\w*\s+безопасност|кибербезопасност|'
-                r'coordinat|admin|assistant|analyst|support|project|product|junior|стаж[её]р',
-                i['name'], re.I)}
-            # A small model's exclusion is only advisory. Unknown professions
-            # must survive even if the model confidently names their IDs.
-            clearly_unrelated = {i['id'] for i in chunk if re.search(
-                r'повар|врач|медсестр|\bводител|курьер|грузчик|сварщик|визажист|'
-                r'парикмахер|уборщик|кадров|рекрут|маркетинг|маркетолог|'
-                r'бренд.менеджер|блогер|\bugc\b|суперинтендант|\bteacher\b',
-                i['name'], re.I)}
+            protected = {i['id'] for i in chunk if re.search(protected_pattern, i['name'], re.I)}
+            clearly_unrelated = {i['id'] for i in chunk if re.search(unrelated_pattern, i['name'], re.I)}
             excluded &= clearly_unrelated
             survivors |= (chunk_ids - excluded) | protected
         return survivors
@@ -1036,13 +1065,17 @@ class Worker(threading.Thread):
                     self.log(f"Не удалось обновить top.md: {exc}")
                 finally:
                     self.store.close()
+                    if getattr(self, "search_cache", None):
+                        self.search_cache.close()
             self.q.put(("done", None))
 
     def _run(self):
         cfg = self.cfg
+        run_started = time.monotonic()
         hh = HHClient(self.log)
         llm = LLMClient(cfg["lm_url"], cfg["lm_model"], self.log,
                         self.stop_event)
+        llm.decision_policy = cfg.get('decision_policy', DEFAULT_POLICY)
         llm.reasoning_effort = cfg.get('lm_reasoning_effort', 'none')
         manager = None
         fast_name = cfg.get("lm_model_fast", "").strip()
@@ -1068,6 +1101,10 @@ class Worker(threading.Thread):
             [SYSTEM_PROMPT, TRIAGE_PROMPT, FACT_PROMPT, "evidence-rules-v6"])
         self.store = EvaluationStore(os.path.join(CACHE_DIR, "evaluations.sqlite3"),
                                      profile_hash)
+        self.search_cache = SearchCache(os.path.join(CACHE_DIR, "search.sqlite3"))
+        scope = search_scope(cfg, profile_hash)
+        llm.fact_cache = self.search_cache
+        llm.context_length = cfg.get("model_context", 8192)
         writer = ResultWriter(profile_hash)
         self.writer = writer
         seen = self.store.completed_ids()
@@ -1155,6 +1192,15 @@ class Worker(threading.Thread):
             passes.extend(
                 (f"Telegram: @{ch}", {"channel": ch, "source": "telegram"})
                 for ch in telegram_channels)
+        if cfg.get('search_mode') == 'Быстрый HH':
+            passes = [(label, src) for label, src in passes if not src.get('source')]
+        if experience == 'entry_pair':
+            regular = [(label, src) for label, src in passes if not src.get('source') and not src.get('resume')]
+            rest = [(label, src) for label, src in passes if src.get('source') or src.get('resume')]
+            passes = [(label + ' · без опыта', dict(src, experience='noExperience')) for label, src in regular] + [
+                (label + ' · 1–3 года', dict(src, experience='between1And3')) for label, src in regular] + rest
+            experience = ''
+
         exclude = [w.strip().lower()
                    for w in cfg["exclude_words"].split(",") if w.strip()]
         include = [w.strip().lower()
@@ -1164,17 +1210,24 @@ class Worker(threading.Thread):
                          if w.strip()]
 
         checked = suitable_count = skipped_count = 0
-        processed_since_break = 0
 
         if not passes:
             raise RuntimeError("Нет доступных источников: проверьте настройки поиска и рекомендации.")
 
         while True:
-            pending = []
-            queued_ids = set()
+            for previous in self.search_cache.pending(scope):
+                if previous['id'] in seen:
+                    self.search_cache.remove(scope, previous['id'])
+            pending = [i for i in self.search_cache.pending(scope) if i['id'] not in seen and i['id'] not in attempted]
+            queued_ids = {i['id'] for i in pending}
+            limit = int(cfg.get('max_checks', 0))
+            collect_cap = max(50, limit * 2) if limit and cfg.get('search_mode') == 'Быстрый HH' else 0
+            if pending:
+                self.log(f"Продолжаю сохранённую очередь: {len(pending)} вакансий.")
+            collection_started = time.monotonic()
             self.log("Собираю вакансии и проверяю названия…")
             for qi, (label, source) in enumerate(passes):
-                if self.stop_event.is_set():
+                if self.stop_event.is_set() or (collect_cap and len(pending) >= collect_cap):
                     break
                 self.log(f"— Источник {qi + 1}/{len(passes)}: {label}")
                 src_skipped = skipped_count
@@ -1209,14 +1262,17 @@ class Worker(threading.Thread):
                         else:
                             items, last_page = client.search(
                                 source.get("query", ""),
-                                source.get("area", area), experience,
+                                source.get("area", area), source.get("experience", experience),
                                 source.get("remote", cfg["remote_only"]),
                                 cfg["only_with_salary"], page,
                                 roles=source.get("roles"),
                             )
                     except (requests.RequestException, RuntimeError) as e:
                         self.log(f"Источник пропущен: {e}")
+                        if 'ограничил доступ' in str(e):
+                            self.stop_event.set()
                         break
+                    self._last_description_request = time.monotonic()
                     if not items:
                         self.log("Больше вакансий нет.")
                         break
@@ -1301,10 +1357,13 @@ class Worker(threading.Thread):
                     self.q.put(("stats",
                                 (skipped_count, checked, suitable_count)))
 
+                    for item in kept:
+                        item["search_source"] = label
+                    self.search_cache.enqueue(scope, kept)
                     pending.extend(kept)
                     queued_ids.update(i["id"] for i in kept)
 
-                    if page >= last_page:
+                    if page >= last_page or (collect_cap and len(pending) >= collect_cap):
                         break
                     self.pause()
 
@@ -1313,16 +1372,23 @@ class Worker(threading.Thread):
                 if qi + 1 < len(passes):
                     self.pause()
 
-            self.log(f"Сбор завершён. Полная проверка: {len(pending)} вакансий.")
+            self.log(f"Сбор завершён за {(time.monotonic()-collection_started):.1f} с. Полная проверка: {len(pending)} вакансий.")
             # One evaluation stage avoids reloading the large model per page.
-            for item in pending:
+            for item in prioritize(pending):
+                if limit and checked >= limit:
+                    self.log(f"Достигнут лимит: {limit} полных проверок. Очередь сохранена.")
+                    break
                 if self.stop_event.is_set():
                     break
-                self.pause()
-                if self.stop_event.is_set():
+                # Generation time counts toward the interval between description requests.
+                interval = random.uniform(cfg['min_delay'], cfg['max_delay'])
+                wait = max(0, interval - (time.monotonic() - getattr(self, '_last_description_request', 0)))
+                if self.stop_event.wait(wait):
                     break
+                self._last_description_request = time.monotonic()
 
                 attempted.add(item["id"])
+                description_started = time.monotonic()
                 try:
                     if item["id"].startswith("habr-"):
                         desc_client = habr
@@ -1336,12 +1402,15 @@ class Worker(threading.Thread):
                         item["url"])
                 except (requests.RequestException, RuntimeError, ValueError) as e:
                     self._record_issue(writer, item, "incomplete", str(e))
+                    if "ограничил доступ" in str(e):
+                        self.stop_event.set()
                     continue
                 if not description.strip():
                     self._record_issue(writer, item, "incomplete",
                                        "Описание не найдено; нужна повторная загрузка.")
                     continue
 
+                network_seconds = time.monotonic() - description_started
                 checked += 1
                 vacancy_text = (
                     f"Должность: {item['name']}\n"
@@ -1371,6 +1440,7 @@ class Worker(threading.Thread):
                 save_audit(saved_description, item, vacancy_text, profile_hash,
                            llm.model, self.profile, status="evaluated",
                            evidence=getattr(llm, "last_evidence", None))
+                self.log(f"Проверка {checked}/{limit or '∞'}: {verdict}; загрузка {network_seconds:.1f} с; оценка {(getattr(llm, 'last_evidence', None) or {}).get('elapsed_seconds', 0):.1f} с.")
                 suitable = None if verdict == "REVIEW" else verdict != "REJECT"
                 if suitable:
                     suitable_count += 1
@@ -1378,6 +1448,7 @@ class Worker(threading.Thread):
                 writer.write(item, score, verdict, direction,
                              resume, reason, suitable)
                 self.store.mark(item["id"], "evaluated", reason)
+                self.search_cache.remove(scope, item["id"])
                 seen.add(item["id"])
                 if time.monotonic() - last_top_update >= 30:
                     self._write_top(writer, cfg)
@@ -1393,18 +1464,6 @@ class Worker(threading.Thread):
                 self.q.put(("stats",
                             (skipped_count, checked, suitable_count)))
 
-                processed_since_break += 1
-                if processed_since_break >= 10:
-                    processed_since_break = 0
-                    rest = random.uniform(15, 30)
-                    self.log(f"Длинная пауза {rest:.0f} с "
-                             "(человеческий темп)…")
-                    end = time.time() + rest
-                    while (time.time() < end
-                           and not self.stop_event.is_set()):
-                        time.sleep(0.2)
-
-
             self._write_top(writer, cfg)
             self.log(
                 f"Готово. Отсеяно на быстрых фильтрах: {skipped_count}, "
@@ -1412,7 +1471,8 @@ class Worker(threading.Thread):
                 f"Файлы — в папке results (top.md — лучшие сверху)."
             )
 
-            if self.stop_event.is_set():
+            self.log(f"Время прогона: {(time.monotonic()-run_started)/60:.1f} мин. Осталось в очереди: {len(self.search_cache.pending(scope))}.")
+            if self.stop_event.is_set() or cfg.get('single_pass', True) or (limit and checked >= limit):
                 break
 
             # Приложение оставляют работать без присмотра — вместо того
@@ -1639,6 +1699,14 @@ class App:
         прогона (как раньше). С фильтрами по направлению и вердикту —
         как в Excel по столбцам."""
         rows = self._read_history_rows()
+        action_map = {}
+        path = os.path.join(CACHE_DIR, 'search.sqlite3')
+        if os.path.exists(path):
+            cache = SearchCache(path)
+            try:
+                action_map = dict(cache.db.execute('SELECT url,status FROM actions'))
+            finally:
+                cache.close()
 
         win = tk.Toplevel(self.root)
         win.title(f"История — {len(rows)} вакансий")
@@ -1665,19 +1733,23 @@ class App:
             state="readonly", width=14)
         cmb_verdict.pack(side="left")
 
+        var_action_filter = tk.StringVar(value='Все')
+        action_filter = ttk.Combobox(filter_row, textvariable=var_action_filter, state='readonly', width=17,
+            values=['Все','Не просмотрено','Просмотрено','Интересно','Откликнулся','Не подходит','Ответ работодателя'])
+        action_filter.pack(side='left', padx=8)
         lbl_count = ttk.Label(filter_row, text="")
         lbl_count.pack(side="right")
 
         table_frame = ttk.Frame(win)
         table_frame.pack(fill="both", expand=True, padx=4, pady=4)
         cols = ("score", "verdict", "direction", "resume", "name",
-                "employer", "salary")
+                "employer", "salary", "action")
         tree = ttk.Treeview(table_frame, columns=cols, show="headings")
         for col, title, width in [
             ("score", "Балл", 60), ("verdict", "Вердикт", 90),
             ("direction", "Направл.", 60), ("resume", "Резюме", 60),
             ("name", "Должность", 300), ("employer", "Компания", 180),
-            ("salary", "Зарплата", 150),
+            ("salary", "Зарплата", 150), ("action", "Мой статус", 120),
         ]:
             tree.heading(col, text=title)
             tree.column(col, width=width,
@@ -1698,6 +1770,10 @@ class App:
                              state="disabled", relief="flat")
         txt_reason.pack(fill="x", padx=4, pady=4)
 
+        history_action = tk.StringVar(value='Не просмотрено')
+        action_box = ttk.Combobox(reason_frame, textvariable=history_action, state='readonly',
+            values=['Не просмотрено','Просмотрено','Интересно','Откликнулся','Не подходит','Ответ работодателя'])
+        action_box.pack(anchor='w', padx=4, pady=4)
         row_data = {}
 
         def render(*_args):
@@ -1707,6 +1783,8 @@ class App:
             want_verdict = var_verdict.get()
             shown = 0
             for v in rows:
+                if var_action_filter.get() != 'Все' and action_map.get(v['url'], 'Не просмотрено') != var_action_filter.get():
+                    continue
                 if (want_dir != "Все"
                         and (v["direction"] or "—") != want_dir):
                     continue
@@ -1718,7 +1796,7 @@ class App:
                     "", "end",
                     values=(f'{v["score"]}/100', v["verdict"],
                             v["direction"] or "—", v["resume"] or "—",
-                            v["name"], v["employer"], v["salary"]),
+                            v["name"], v["employer"], v["salary"], action_map.get(v["url"], "Не просмотрено")),
                     tags=(tag,))
                 row_data[iid] = v
                 shown += 1
@@ -1726,6 +1804,7 @@ class App:
 
         cmb_direction.bind("<<ComboboxSelected>>", render)
         cmb_verdict.bind("<<ComboboxSelected>>", render)
+        action_filter.bind('<<ComboboxSelected>>', render)
         render()
 
         def on_select(_event):
@@ -1733,6 +1812,7 @@ class App:
             if not sel or sel[0] not in row_data:
                 return
             data = row_data[sel[0]]
+            history_action.set(action_map.get(data["url"], "Не просмотрено"))
             text = data["reason"] or "(без объяснения)"
             if data.get("resume"):
                 text = f'Резюме: {data["resume"]} · {text}'
@@ -1746,6 +1826,15 @@ class App:
             if sel and sel[0] in row_data:
                 webbrowser.open(row_data[sel[0]]["url"])
 
+        def save_history_action(_event):
+            sel=tree.selection()
+            if not sel or sel[0] not in row_data:
+                return
+            url=row_data[sel[0]]['url']
+            self.set_action_for_url(url, history_action.get())
+            action_map[url]=history_action.get()
+            render()
+        action_box.bind('<<ComboboxSelected>>', save_history_action)
         tree.bind("<<TreeviewSelect>>", on_select)
         tree.bind("<Double-1>", on_double)
 
@@ -1761,6 +1850,10 @@ class App:
         if dmin > dmax:
             dmin, dmax = dmax, dmin
         self.cfg.update({
+            "decision_policy": {**{k: v.get() for k,v in self.ui.policy_vars.items()}, "minimum_net_salary": max(0, int(self.ui.minimum_salary.get()))},
+            "search_mode": self.var_search_mode.get(),
+            "max_checks": max(0, int(self.var_max_checks.get())),
+            "single_pass": self.var_single_pass.get(),
             "queries": self.txt_queries.get("1.0", "end").strip(),
             "exclude_words": " ".join(
                 self.txt_exclude.get("1.0", "end").split()),
@@ -1946,6 +2039,47 @@ class App:
         self.lbl_status.configure(text=message)
         self.ui.update_bulk_button()
 
+    def vacancy_action(self, url):
+        path = os.path.join(CACHE_DIR, 'search.sqlite3')
+        if not os.path.exists(path):
+            return 'Не просмотрено'
+        cache = SearchCache(path)
+        try:
+            return cache.action(url)
+        finally:
+            cache.close()
+
+    def on_set_action(self, status):
+        selection = self.tree.selection()
+        if not selection:
+            return
+        self.set_action_for_url(self.result_data[selection[0]]['url'], status)
+        self.log('Статус основной вакансии: ' + status)
+
+    def set_action_for_url(self, url, status):
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        cache = SearchCache(os.path.join(CACHE_DIR, 'search.sqlite3'))
+        try:
+            cache.set_action(url, status)
+        finally:
+            cache.close()
+
+    def on_tailor_selected(self):
+        selection = self.tree.selection()
+        if not selection:
+            return
+        if self.worker and self.worker.is_alive():
+            messagebox.showinfo('Резюме', 'Останови поиск перед подготовкой резюме, чтобы освободить модель.')
+            return
+        data = self.result_data[selection[0]]
+        if not data.get('source'):
+            messagebox.showinfo('Резюме', 'Для этой карточки нет сохранённого описания. Скопируй его в редактор резюме.')
+        import resume_tailor
+        win = tk.Toplevel(self.root)
+        editor = resume_tailor.App(win)
+        editor.txt_vacancy.insert('1.0', data.get('source', ''))
+        win._resume_editor = editor
+
     def on_select_result(self, _event):
         sel = self.tree.selection()
         if not sel or sel[0] not in self.result_data:
@@ -1968,6 +2102,9 @@ class App:
             cfg = self._collect_config()
         except (RuntimeError, OSError, ValueError, tk.TclError) as exc:
             messagebox.showerror("Настройки", str(exc))
+            return
+        if cfg.get('experience') == 'Без опыта + 1–3 года' and cfg.get('exp_filter') == '1–3 года и больше':
+            messagebox.showwarning('Опыт', 'Для двух потоков отключи отсев «1–3 года и больше»: иначе второй поток будет исключён целиком.')
             return
         if cfg["pages"] < 1:
             messagebox.showwarning("Поиск", "Количество страниц должно быть больше нуля.")

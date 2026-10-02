@@ -177,7 +177,7 @@ def optional_quote(quote, source):
                for value, line in experience_evidence(source))
 
 
-def salary_state(quote):
+def salary_state(quote, minimum=40000):
     text = quote.lower().replace('\xa0', ' ').replace('\u202f', ' ')
     if 'на руки' not in text or not re.search(r'руб|₽|\brur\b|\brub\b', text):
         return 'unknown'
@@ -189,8 +189,8 @@ def salary_state(quote):
     amounts = [float(n.replace(' ', '').replace(',', '.')) for n in numbers]
     if 'тыс' in text:
         amounts = [n * 1000 for n in amounts]
-    if max(amounts) >= 40000:
-        return 'ok' if min(amounts) >= 40000 else 'unknown'
+    if max(amounts) >= minimum:
+        return 'ok' if min(amounts) >= minimum else 'unknown'
     if re.search(r'\bот\b', text) and not re.search(r'\bдо\b', text):
         return 'unknown'
     return 'below'
@@ -339,7 +339,17 @@ def verify_facts(data, source):
     return verified, issues
 
 
-def decide(facts, issues):
+DEFAULT_POLICY = {
+    'minimum_net_salary': 40000,
+    'reject_level': True, 'reject_experience': True, 'reject_it': True,
+    'reject_contract': True, 'reject_night': True, 'reject_relocation': True,
+    'reject_travel': True, 'reject_sales': True, 'reject_development': True,
+    'reject_bpmn': True,
+}
+
+
+def decide(facts, issues, policy=None):
+    policy = dict(DEFAULT_POLICY, **(policy or {}))
     def value(key): return facts[key]['value']
     direction = {'project': 'координация', 'implementation': 'координация',
                  'support': 'техподдержка', 'admin': 'техподдержка', 'data': 'данные'}.get(value('role'))
@@ -352,20 +362,21 @@ def decide(facts, issues):
               ('travel', 'regular', 'регулярные выезды или командировки'), ('sales', 'main', 'основная работа — продажи'),
               ('development', 'main', 'основная работа — разработка'), ('bpmn', 'main', 'основная работа — BPMN')]
     for key, blocked, label in blocks:
-        if value(key) == blocked:
+        if policy.get('reject_' + key, True) and value(key) == blocked:
             return 'REJECT', 0, direction, f'{label}. Цитата: «{facts[key]["quote"]}»', resume
-    salary = salary_state(facts['salary']['quote'])
+    minimum = int(policy['minimum_net_salary'])
+    salary = salary_state(facts['salary']['quote'], minimum)
     if salary == 'below':
-        return 'REJECT', 0, direction, f'Ниже 40 000 ₽ на руки в месяц. Цитата: «{facts["salary"]["quote"]}»', resume
+        return 'REJECT', 0, direction, f'Ниже {minimum:,} ₽ на руки в месяц. Цитата: «{facts["salary"]["quote"]}»', resume
     # A separately verified hard stop stands even if an unrelated field was invalid.
     questions = []
     for key, label in [('it', 'IT-контекст'), ('role', 'содержание роли')]:
         if value(key) == 'unknown': questions.append(label)
     clarifications = []
     if value('skills') == 'working': clarifications.append('соответствие практических навыков: «' + facts['skills']['quote'] + '»')
-    if value('contract') == 'unknown': clarifications.append('оформление по ТК')
+    if policy['reject_contract'] and value('contract') == 'unknown': clarifications.append('оформление по ТК')
     if salary == 'unknown': clarifications.append('зарплата на руки за месяц')
-    if value('travel') == 'rare': questions.append('частота и длительность редких поездок')
+    if policy['reject_travel'] and value('travel') == 'rare': questions.append('частота и длительность редких поездок')
     if value('skills') == 'advanced': questions.append('глубина необходимых навыков: «'+facts['skills']['quote']+'»')
     if value('role') == 'other': questions.append('соответствие роли карьерным направлениям')
     if issues:

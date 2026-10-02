@@ -112,7 +112,7 @@ def requirement_items(source):
         heading = None
         if re.fullmatch(r'(?:будет (?:большим )?(?:плюсом|преимуществом)|преимуществом будет|плюсом|nice.to.have)', q):
             heading = 'optional'
-        elif re.match(r'^(?:(?:наши )?(?:требования|пожелания|ожидания)|что (?:мы )?(?:ожидаем|жд[её]м)|вам потребуется|наш кандидат|ты наш идеальный кандидат|какие знания и навыки|что (?:для нас )?важно|кого мы ищем|ожидаем от|идеальный кандидат|вы подходите|для кандидатов|requirements)', q):
+        elif re.match(r'^(?:(?:наши )?(?:требования|пожелания|ожидания)|что (?:мы )?(?:ожидаем|жд[её]м)|вам потребуется|наш кандидат|ты наш идеальный кандидат|какие знания и навыки|что (?:для нас )?важно|кого мы ищем|ожидаем от|идеальный кандидат|вы подходите|вы (?:нам )?подойд[её]те|для кандидатов|requirements)', q):
             heading = 'required'
         elif re.match(r'^(?:обязанности|основные задачи|задачи|чем предстоит|что предстоит)', q):
             heading = 'duties'
@@ -143,7 +143,7 @@ def experience_evidence(source):
     found = []
     for section, quote in requirement_items(source):
         q = quote.lower()
-        if not re.search(r'опыт|стаж|практик|\bexperience\b', q):
+        if not re.search(r'опыт|стаж|практик|работали|\bexperience\b', q):
             continue
         # Company history / benefits and duties are not applicant experience.
         if section in {'other', 'duties'} or re.search(r'наша команда|у нас.*(?:сотрудник|опыт)|компания.*опыт', q):
@@ -151,14 +151,14 @@ def experience_evidence(source):
         optional = section == 'optional' or bool(re.search(
             r'желател|приветству|будет.*(?:плюс|преимуществ)|не\s+обязател|не\s+требу|preferred|optional', q))
         role = bool(re.search(
-            r'коммерческ|аналогичн|схож\w*\s+позици|на\s+позици|в\s+роли|'
+            r'работали\s+(?:ассистент|проектн\w*\s+менеджер)|коммерческ|аналогичн|схож\w*\s+позици|на\s+позици|в\s+роли|'
             r'опыт\s+(?:работы\s*:?\s*)?(?:аналитик|инженер\w*\s+внедрен|ассистент|бизнес.ассистент|координатор|консультант|'
             r'специалист|системн\w*\s+администратор|администратор|менеджер|руководител|project)|'
             r'опыт\s+работы\s+в\s+(?:сфере|области|техническ\w*\s+поддержк|digital|маркетинг|it\b|ит\b)|'
             r'опыта\s+в\s+проектн|с\s+опытом\s*[-—:]\s*системн|'
             r'с\s+опытом\s+самостоятельн\w*\s+работы\s+рядом\s+с\s+собственник|'
             r'experience\s+(?:as\s+a|working\s+with\s+preschoolers)', q))
-        duration = re.search(r'(?:от\s+|не менее\s+)?\d+(?:\s*[-–]\s*\d+)?(?:-\w+)?\s*(?:лет|год|месяц)', q)
+        duration = re.search(r'(?:от\s+|не менее\s+)?\d+(?:\s*[-–]\s*\d+)?(?:-?\w+)?\s*(?:лет|год|месяц)', q)
         activity = re.search(r'опыт\s+(?:работы\s+)?(?:администрирован|сопровожден|управлен|реализац|продаж|поддержк)', q)
         # A duration of professional activity is distinct from knowing a tool.
         role = role or bool(duration and (activity or re.search(
@@ -326,6 +326,11 @@ def verify_facts(data, source):
             verified['skills'] = dict(value='advanced', quote=quote)
             issues = [i for i in issues if not i.startswith('skills:')]
             break
+    for line in description.splitlines():
+        if re.search(r'разъездн\w*\s+(?:характер\s+)?работ', line, re.I) and not re.search(r'не\s+(?:предусмотр|требу)|без\s+разъезд|не\s+разъезд', line, re.I):
+            verified['travel'] = dict(value='regular', quote=line.strip())
+            issues = [i for i in issues if not i.startswith('travel:')]
+            break
     for line in source.splitlines():
         if explicit_seniority(line if line.startswith('Должность:') else '', line):
             verified['level'] = dict(value='senior', quote=line.strip())
@@ -344,7 +349,7 @@ def decide(facts, issues):
               ('it', 'no', 'нет допустимого IT-контекста'),
               ('contract', 'no_tk', 'нет оформления по ТК'),
               ('night', 'required', 'ночные смены'), ('relocation', 'required', 'обязательный переезд'),
-              ('travel', 'regular', 'регулярные командировки'), ('sales', 'main', 'основная работа — продажи'),
+              ('travel', 'regular', 'регулярные выезды или командировки'), ('sales', 'main', 'основная работа — продажи'),
               ('development', 'main', 'основная работа — разработка'), ('bpmn', 'main', 'основная работа — BPMN')]
     for key, blocked, label in blocks:
         if value(key) == blocked:

@@ -15,7 +15,7 @@ import webbrowser
 from datetime import datetime
 
 from llm_client import StreamingLLMClient, LocalModelManager
-from browser_queue import BrowserQueue, suitable_urls
+from browser_queue import BrowserQueue, suitable_urls, group_vacancies, variant_details
 from evidence_eval import FACT_PROMPT, FACT_SCHEMA, parse_facts, valid_facts, verify_facts, decide, audit_path, save_audit, numbered_source, materialize
 from settings import load_settings, save_settings
 from storage import EvaluationStore, atomic_text, evaluation_fingerprint
@@ -907,6 +907,7 @@ class ResultWriter:
     def __init__(self, profile_hash=""):
         os.makedirs(RESULTS_DIR, exist_ok=True)
         self.profile_hash = profile_hash
+        self.sources = {}
         self.suitable_path = os.path.join(RESULTS_DIR, "suitable.md")
         self.rejected_path = os.path.join(RESULTS_DIR, "rejected.md")
         self.skipped_path = os.path.join(RESULTS_DIR, "skipped.md")
@@ -922,6 +923,8 @@ class ResultWriter:
 
     def write(self, item, score, verdict, direction, resume, reason,
               suitable):
+        if item.get("_source"):
+            self.sources[item["url"]] = item["_source"]
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         line = (
             f"- **{score}/100 ({verdict})** — [{item['name']}]({item['url']}) "
@@ -1062,7 +1065,7 @@ class Worker(threading.Thread):
 
         profile_hash = evaluation_fingerprint(
             self.profile, cfg, llm.model, llm_fast.model,
-            [SYSTEM_PROMPT, TRIAGE_PROMPT, FACT_PROMPT, "evidence-rules-v5"])
+            [SYSTEM_PROMPT, TRIAGE_PROMPT, FACT_PROMPT, "evidence-rules-v6"])
         self.store = EvaluationStore(os.path.join(CACHE_DIR, "evaluations.sqlite3"),
                                      profile_hash)
         writer = ResultWriter(profile_hash)
@@ -1371,6 +1374,7 @@ class Worker(threading.Thread):
                 suitable = None if verdict == "REVIEW" else verdict != "REJECT"
                 if suitable:
                     suitable_count += 1
+                item["_source"] = vacancy_text
                 writer.write(item, score, verdict, direction,
                              resume, reason, suitable)
                 self.store.mark(item["id"], "evaluated", reason)
@@ -1384,7 +1388,7 @@ class Worker(threading.Thread):
                     "name": item["name"],
                     "employer": item["employer"],
                     "salary": item["salary"], "url": item["url"],
-                    "suitable": suitable, "reason": reason,
+                    "suitable": suitable, "reason": reason, "source": vacancy_text,
                 }))
                 self.q.put(("stats",
                             (skipped_count, checked, suitable_count)))
@@ -1483,6 +1487,9 @@ class Worker(threading.Thread):
             (v for v in rows.values() if v["verdict"] in {"MATCH", "STRONG_MATCH", "WEAK"}),
             key=lambda v: (-v["score"],
                            self._DIRECTION_RANK.get(v["direction"], 4)))
+        for row in top:
+            row["source"] = getattr(writer, "sources", {}).get(row["url"], "")
+        top = group_vacancies(top)
         path = os.path.join(RESULTS_DIR, "top.md")
         with atomic_text(path) as f:
             f.write("# Подходящие вакансии, лучшие сверху\n\n")
@@ -1495,6 +1502,9 @@ class Worker(threading.Thread):
                     f"[{v['name']}]({v['url']}) — {v['employer']}, "
                     f"{v['salary']}{dir_tag}, резюме {v['resume'] or '—'}\n"
                     f"  - {v['reason']}\n")
+                details = variant_details(v)
+                if details:
+                    f.write("\n" + "\n".join("  " + line for line in details.splitlines()) + "\n")
         self.log(f"Обновлён results/top.md ({len(top)} вакансий).")
 
 
@@ -1944,6 +1954,8 @@ class App:
         if hasattr(self, "ui"):
             self.ui.show_detail(data)
         text = data["reason"] or "(без объяснения)"
+        if variant_details(data):
+            text += "\n\n" + variant_details(data)
         if data.get("resume"):
             text = f'Резюме: {data["resume"]} · {text}'
         self.txt_reason.configure(state="normal")

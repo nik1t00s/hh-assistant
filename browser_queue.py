@@ -1,6 +1,7 @@
 """Open a snapshot of current-run vacancies without blocking Tk's event loop."""
 import webbrowser
 import re
+from difflib import SequenceMatcher
 from urllib.parse import urlsplit
 
 
@@ -20,10 +21,53 @@ def canonical_url(url):
         return None
 
 
+def variants(row):
+    return row.get('variants') or [row]
+
+
+def similar_vacancies(left, right):
+    norm = lambda s: ' '.join((s or '').casefold().split())
+    if not all(norm(left.get(k)) == norm(right.get(k)) and norm(left.get(k)) for k in ('name', 'employer', 'verdict')):
+        return False
+    a, b = left.get('source', ''), right.get('source', '')
+    a, b = norm(a.split('Описание:', 1)[-1]), norm(b.split('Описание:', 1)[-1])
+    return min(len(a), len(b)) >= 100 and SequenceMatcher(None, a, b, autojunk=False).ratio() >= .97
+
+
+def group_vacancies(rows):
+    """Presentation only: every original record and URL stays available."""
+    grouped = []
+    for row in rows:
+        for group in grouped:
+            if similar_vacancies(group, row):
+                members = list(group.get('variants') or [dict(group)])
+                if row['url'] not in {v['url'] for v in members}:
+                    members.append(dict(row))
+                group['variants'] = members
+                break
+        else:
+            grouped.append(dict(row))
+    return grouped
+
+
+def variant_details(row):
+    members = variants(row)
+    if len(members) < 2:
+        return ''
+    sets = [set(line.strip() for line in v.get('source', '').split('Описание:', 1)[-1].splitlines() if line.strip()) for v in members]
+    common = set.intersection(*sets)
+    lines = ['Похожие объявления — условия могут различаться:']
+    for index, (v, own) in enumerate(zip(members, sets), 1):
+        lines += [f"Вариант {index}: {v['url']}", f"Зарплата: {v.get('salary', 'не указана')}"]
+        differences = [line.strip() for line in v.get('source', '').split('Описание:', 1)[-1].splitlines() if line.strip() in own - common]
+        lines.extend(differences or ['Описание совпадает с другими вариантами.'])
+    return '\n'.join(lines)
+
+
 def suitable_urls(rows):
     """Latest verdict per URL wins; UI filters do not change the session snapshot."""
     latest = {}
-    for row in rows:
+    for row in (v for group in rows for v in variants(group)):
         url = canonical_url(row.get("url", ""))
         if not url:
             continue

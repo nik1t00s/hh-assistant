@@ -1,4 +1,5 @@
 """Desktop presentation, separate from search and evaluation logic."""
+from browser_queue import group_vacancies, variants
 import tkinter as tk
 from tkinter import ttk, messagebox
 from browser_queue import suitable_urls
@@ -287,6 +288,8 @@ class DesktopUI:
         self.detail_title.pack(anchor="w", pady=(12, 8))
         self.detail_meta = label(detail, "Здесь будут условия и объяснение оценки.", 10, MUTED, wraplength=216)
         self.detail_meta.pack(anchor="w", pady=(0, 14))
+        self.variant_buttons = tk.Frame(detail, bg=PAPER)
+        self.variant_buttons.pack(fill="x")
         reason_box = tk.Frame(detail, bg=PAPER)
         reason_box.pack(fill="both", expand=True)
         app.txt_reason = tk.Text(reason_box, width=22, height=12, bg=PAPER, fg=MUTED,
@@ -449,6 +452,18 @@ class DesktopUI:
                             "Скопируй значение в соответствующее поле приложения.")
 
     def add_result(self, data, refresh=True):
+        for iid, existing in self.app.result_data.items():
+            grouped = group_vacancies([existing, data])
+            if len(grouped) == 1:
+                merged = grouped[0]
+                self.app.result_data[iid] = merged
+                values = list(self.app.tree.item(iid, 'values'))
+                values[4] = f"{merged['name']} · {len(variants(merged))} объявления"
+                self.app.tree.item(iid, values=values)
+                if refresh:
+                    self.refresh_results()
+                    self.app.on_select_result(None)
+                return
         verdict = data.get("verdict", "")
         tag = "unknown" if data.get("suitable") is None else (
             "good" if verdict in ("MATCH", "STRONG_MATCH") else "weak" if verdict == "WEAK" else "bad")
@@ -495,6 +510,8 @@ class DesktopUI:
             self.empty.place(relx=.5, rely=.5, anchor="center")
             a.tree.selection_remove(*a.tree.selection())
             self.open_button.configure(state="disabled")
+            for child in self.variant_buttons.winfo_children():
+                child.destroy()
             self.detail_title.configure(text="Выбери вакансию")
             self.detail_meta.configure(text="Здесь будут условия и объяснение оценки.")
             self.detail_verdict.configure(text="ПОДРОБНОСТИ")
@@ -508,6 +525,13 @@ class DesktopUI:
         self.detail_verdict.configure(text=VERDICTS.get(data.get("verdict"), "На проверку").upper())
         self.detail_meta.configure(text=f"{data['employer']}\n{data['salary']}\n{data.get('direction') or 'Направление не определено'}")
         self.open_button.configure(state="normal")
+        for child in self.variant_buttons.winfo_children():
+            child.destroy()
+        if len(variants(data)) > 1:
+            import webbrowser
+            for index, row in enumerate(variants(data), 1):
+                ttk.Button(self.variant_buttons, text=f"Открыть вариант {index} ↗",
+                           command=lambda url=row['url']: webbrowser.open(url)).pack(fill='x', pady=2)
 
     def update_bulk_button(self):
         if self.app.browser_queue.active:

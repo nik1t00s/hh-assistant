@@ -143,11 +143,13 @@ def experience_evidence(source):
     found = []
     for section, quote in requirement_items(source):
         q = quote.lower()
-        if not re.search(r'опыт|стаж|практик|работали|\bexperience\b', q):
+        if not re.search(r'опыт|\bстаж(?:а|ем|у)?\b|работали|\bexperience\b|учебн.*практик', q):
             continue
         # Company history / benefits and duties are not applicant experience.
         if section in {'other', 'duties'} or re.search(r'наша команда|у нас.*(?:сотрудник|опыт)|компания.*опыт', q):
             continue
+        if re.search(r'(?:получить|приобрести|наработать)\s+(?:\w+\s+){0,2}опыт', q):
+            continue  # Future learning is not a requirement for existing experience.
         optional = section == 'optional' or bool(re.search(
             r'желател|приветству|будет.*(?:плюс|преимуществ)|не\s+обязател|не\s+требу|preferred|optional', q))
         role = bool(re.search(
@@ -252,6 +254,15 @@ def verify_facts(data, source):
                 if value == 'implementation' and not re.search(patterns[value], q) and re.search(r'синхрониз|координ|статус', q) and re.search(r'проект|кросс.функциональн', q):
                     value = 'project'
                 supported = bool(re.search(patterns[value], q))
+                if value == 'support' and re.search(r'поддержк\w*\s+(?:hr|продаж|бренд|жизнедеятельност)|поддерживать\s+специалистов\s+команды', q):
+                    supported = False
+                title = source.splitlines()[0].lower() if source else ''
+                if value in {'project', 'implementation'} and re.search(r'системн\w*\s+аналитик', title):
+                    # Participation in technical projects is not project coordination.
+                    supported = False
+                if value == 'data' and re.search(r'data\s+engineer|инженер\w*\s+по\s+данным', title):
+                    # Engineering and report analysis have different entry requirements.
+                    supported = False
             elif key == 'contract' and value == 'tk':
                 supported = bool(re.search(r'\bтк\b|трудов\w*\s+(?:кодекс|договор)', q)
                                  and not re.search(r'не\s+оформ|без\s+(?:тк|трудов)|не\s+предусмотр', q))
@@ -263,12 +274,12 @@ def verify_facts(data, source):
             elif key == 'night' and value == 'required':
                 supported = bool(re.search(r'ночн', q) and not re.search(r'без\s+ноч|нет\s+ноч|не\s+предусмотр', q))
             elif key == 'relocation' and value == 'required':
-                supported = bool(re.search(r'переезд|релокац', q) and not re.search(r'не\s+треб|без\s+переезд|помощь|возможн', q))
+                supported = bool(re.search(r'переезд|релокац', q) and not re.search(r'не\s+треб|без\s+переезд|помощь|возможн|или\s+уже\s+(?:наход|жив|прожив)|если\s+.*(?:не\s+жив|из\s+друг)', q))
             elif key == 'travel' and value == 'regular':
                 supported = bool(re.search(r'командиров|выезд|разъезд', q) and re.search(r'регуляр|часты|еженед|постоян|\d+\s*%', q))
             elif key == 'contract' and value == 'no_tk':
                 supported = bool(re.search(r'самозанят|\bгпх\b|\bип\b|без\s+оформлен|не\s+оформляем', q)
-                                 and not re.search(r'\bтк\b|трудов\w*\s+договор', q))
+                                 and not re.search(r'\bтк\b|трудов\w*\s+договор|срочн\w*\s+договор', q))
             elif key == 'sales' and value == 'main':
                 supported = bool(re.search(r'холодн\w*\s+(?:звон|лид)|активн\w*\s+продаж|'
                                            r'продавать|выполн\w*\s+план\w*\s+продаж', q)
@@ -288,7 +299,7 @@ def verify_facts(data, source):
                     supported = bool(re.search(r'строитель|недвижим|маркетинг|реклам|розничн|'
                                                r'клининг|рестора|мероприяти|торговл|маркетплейс', q)
                                      and not technical)
-                    if re.search(r'(?:\bIT\b|\bИТ\b)[ -]?(?:отдел|проект|решени)|цифров\w*\s+сервис', source, re.I):
+                    if re.search(r'(?:\bIT\b|\bИТ\b)[ -]?(?:отдел|проект|решени)|цифров\w*\s+сервис|Должность:[^\n]*(?:системн\w*\s+(?:аналитик|администратор)|департамент\w*\s+ИТ)', source, re.I):
                         supported = False  # A non-IT employer can have an IT role.
             if not supported:
                 issues.append(f'{key}: цитата не подтверждает заявленный факт')

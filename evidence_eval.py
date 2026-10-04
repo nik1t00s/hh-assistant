@@ -150,8 +150,10 @@ def experience_evidence(source):
             continue
         if re.search(r'(?:получить|приобрести|наработать)\s+(?:\w+\s+){0,2}опыт', q):
             continue  # Future learning is not a requirement for existing experience.
+        # An optional industry qualifier does not make the preceding experience optional.
+        obligation = re.split(r',\s*желательно\s+в\s+(?:сфере|области|отрасли)\b', q, maxsplit=1)[0]
         optional = section == 'optional' or bool(re.search(
-            r'желател|приветству|будет.*(?:плюс|преимуществ)|не\s+обязател|не\s+требу|preferred|optional', q))
+            r'желател|приветству|будет.*(?:плюс|преимуществ)|не\s+обязател|не\s+требу|preferred|optional', obligation))
         role = bool(re.search(
             r'работали\s+(?:ассистент|проектн\w*\s+менеджер)|коммерческ|аналогичн|схож\w*\s+позици|на\s+позици|в\s+роли|'
             r'опыт\s+(?:работы\s*:?\s*)?(?:аналитик|инженер\w*\s+внедрен|ассистент|бизнес.ассистент|координатор|консультант|'
@@ -161,6 +163,11 @@ def experience_evidence(source):
             r'с\s+опытом\s+самостоятельн\w*\s+работы\s+рядом\s+с\s+собственник|'
             r'experience\s+(?:as\s+a|working\s+with\s+preschoolers)', q))
         duration = re.search(r'(?:от\s+|не менее\s+)?\d+(?:\s*[-–]\s*\d+)?(?:-?\w+)?\s*(?:лет|год|месяц)', q)
+        professional_activity = re.search(
+            r'опыт\s+(?:работы\s+)?(?:в\s+)?(?:управлени[яи]\s+проектн\w*\s+команд|'
+            r'заказн\w*\s+разработк|ведени[яи]\s+кросс.функциональн\w*\s+проект)', q)
+        if professional_activity and not re.search(r'учебн|студенческ|курсов|дипломн', q):
+            role = True
         activity = re.search(r'опыт\s+(?:работы\s+)?(?:администрирован|сопровожден|управлен|реализац|продаж|поддержк)', q)
         # A duration of professional activity is distinct from knowing a tool.
         role = role or bool(duration and (activity or re.search(
@@ -238,7 +245,7 @@ def verify_facts(data, source):
                     value = 'advanced'
                 elif re.search(r'базов|обучени\w*\s+с\s+нуля|всему\s+научим', q):
                     value = 'basic'
-                elif re.search(r'знани|знать|пониман|владен|навык|уме(?:ет|ние|ть)|опыт\s+(?:работы\s+с|использован)|как\s+работать|использован|ориентир', q):
+                elif re.search(r'знани|знать|пониман|владен|навык|уме(?:ет|ние|ть)|опыт\s+(?:работы\s+с|использован)|как\s+работать|использован|ориентир|уверенн\w*\s+пользователь', q):
                     value = 'working'
                 else:
                     supported = False
@@ -272,7 +279,7 @@ def verify_facts(data, source):
                                  and re.search(r'моделир|описыва|описани|схем', q)
                                  and not re.search(r'не\s+(?:основн|требуется)|без\s+моделирован', q))
             elif key == 'night' and value == 'required':
-                supported = bool(re.search(r'ночн', q) and not re.search(r'без\s+ноч|нет\s+ноч|не\s+предусмотр', q))
+                supported = bool(re.search(r'ночн|\bночь\b', q) and not re.search(r'без\s+ноч|нет\s+ноч|не\s+предусмотр|ноч\w*\s+(?:смен\w*\s+)?не\s+(?:требу|предусмотр)', q))
             elif key == 'relocation' and value == 'required':
                 supported = bool(re.search(r'переезд|релокац', q) and not re.search(r'не\s+треб|без\s+переезд|помощь|возможн|или\s+уже\s+(?:наход|жив|прожив)|если\s+.*(?:не\s+жив|из\s+друг)', q))
             elif key == 'travel' and value == 'regular':
@@ -291,6 +298,8 @@ def verify_facts(data, source):
                 technical = re.search(r'\bit\b|\bит\b|софт|программно|цифров\w*\s+(?:сервис|продукт)|информационн\w*\s+(?:систем|технолог)|системн\w*\s+администратор|'
                                       r'разработ\w*\s+(?:приложен|сайт|по\b)|\bmedtech\b|медтех|digital.решени|робототех|видеоаналит', q)
                 technical = technical or (re.search(r'поддержива|администрир|настрой|обслужива', q) and re.search(r'windows|linux|сервер|сетев\w*\s+сервис|инфраструктур', q))
+                technical = technical or re.search(r'digital[ -]интегратор|разработ\w*\s+(?:(?:интегрированн|высоконагруженн)\w*\s+(?:и\s+)?)*интернет[ -]решени', q)
+                technical = technical or (re.search(r'внедря|сопровожда|разрабатыва|поддержива', q) and re.search(r'систем\w*\s+электронн\w*\s+документооборот|\bсэд\b|\bdocsvision\b', q))
                 if value == 'yes':
                     supported = bool(technical)
                     if re.search(r'(?:своя|собственная|используем|внедрена)\s+it.систем', q):

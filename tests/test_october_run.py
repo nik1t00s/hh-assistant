@@ -2,6 +2,48 @@ import unittest
 from evidence_eval import VALUES, verify_facts, decide
 
 class OctoberRunTests(unittest.TestCase):
+    def test_industry_preference_does_not_cancel_required_experience(self):
+        quote='Опыт работы менеджером проектов, желательно в сфере образования'
+        facts,_=self.facts('Требования:\n'+quote,'experience','required',quote)
+        self.assertEqual(facts['experience']['value'],'required')
+        for quote in ['Желателен опыт работы менеджером проектов',
+                      'Опыт работы менеджером проектов не обязателен, желательно в сфере образования']:
+            facts,_=self.facts('Требования:\n'+quote,'experience','optional',quote)
+            self.assertEqual(facts['experience']['value'],'optional')
+
+    def test_professional_experience_without_duration(self):
+        for quote in ['Опыт в управлении проектной командой', 'Опыт в заказной разработке',
+                      'Опыт ведения кросс-функциональных проектов']:
+            facts,_=self.facts('Требования:\n'+quote,'experience','required',quote)
+            self.assertEqual(facts['experience']['value'],'required')
+        for quote in ['Опыт в управлении учебной проектной командой',
+                      'Опыт ведения кросс-функциональных проектов в рамках учебной практики',
+                      'Опыт работы с Excel', 'Желателен опыт в заказной разработке']:
+            facts,_=self.facts('Требования:\n'+quote,'experience','required',quote)
+            self.assertNotEqual(facts['experience']['value'],'required')
+
+    def test_night_noun_and_negation(self):
+        quote='Смены: утро (07:00–16:00), вечер (14:00–23:00), ночь (22:45–07:15)'
+        facts,_=self.facts(quote,'night','required',quote)
+        self.assertEqual(facts['night']['value'],'required')
+        for quote in ['Без ночных смен', 'Ночные смены не предусмотрены', 'Ночь не требуется']:
+            facts,_=self.facts(quote,'night','required',quote)
+            self.assertNotEqual(facts['night']['value'],'required')
+
+    def test_it_product_context_not_ordinary_software_user(self):
+        for quote in ['Внедряем и сопровождаем системы электронного документооборота на базе DocsVision',
+                      'Российский digital-интегратор с экспертизой в AI и ML']:
+            facts,_=self.facts(quote,'it','yes',quote)
+            self.assertEqual(facts['it']['value'],'yes')
+        quote='Используем систему электронного документооборота для кадровых документов'
+        facts,_=self.facts(quote,'it','yes',quote)
+        self.assertNotEqual(facts['it']['value'],'yes')
+
+    def test_confident_user_is_working_skill(self):
+        quote='Уверенный пользователь Microsoft Excel, Power Point, Word'
+        facts,_=self.facts(quote,'skills','working',quote)
+        self.assertEqual(facts['skills']['value'],'working')
+
     def facts(self, source, field, value, quote):
         facts={k:dict(value='unknown',quote='') for k in VALUES}
         facts[field]=dict(value=value,quote=quote)

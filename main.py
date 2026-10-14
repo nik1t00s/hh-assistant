@@ -13,18 +13,19 @@ import threading
 import time
 import webbrowser
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from llm_client import StreamingLLMClient, LocalModelManager
-from browser_queue import BrowserQueue, suitable_urls, group_vacancies, variant_details
+from browser_queue import BrowserQueue, suitable_urls, visible_urls, group_vacancies, variant_details
 from evidence_eval import DEFAULT_POLICY, VALUES, FACT_PROMPT, FACT_SCHEMA, parse_facts, valid_facts, verify_facts, decide, audit_path, save_audit, numbered_source, materialize
 from settings import load_settings, save_settings
-from storage import EvaluationStore, SearchCache, search_scope, prioritize, extraction_key, atomic_text, evaluation_fingerprint
+from storage import entry_search_passes, ordered_search_passes, EvaluationStore, SearchCache, search_scope, prioritize, extraction_key, atomic_text, evaluation_fingerprint
 from vacancy_rules import (strip_html, extract_jobposting_description,
-                           short_profile, score_cap, salary_cap, word_hit)
+                           short_profile, score_cap, salary_cap, word_hit, saved_hh_description)
 
 import requests
 import tkinter as tk
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import messagebox, scrolledtext, ttk, filedialog
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
@@ -132,8 +133,8 @@ DEFAULT_CONFIG = {'decision_policy': dict(DEFAULT_POLICY), 'search_mode': 'Бы�
  'resume_hash': '',
  'hh_cookie': '',
  'pages': 2,
- 'min_delay': 3.0,
- 'max_delay': 7.0,
+ 'min_delay': 20.0,
+ 'max_delay': 30.0,
  'lm_url': 'http://localhost:1234/v1',
  'lm_model': '',
  'lm_model_fast': ''}
@@ -188,6 +189,40 @@ def format_salary(comp):
 # HH API
 # ----------------------------------------------------------------------
 
+def hh_response_diagnostic(response):
+    """Only fixed labels and numeric metadata; never raw URLs, headers or HTML."""
+    def route(url):
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        site = "HH" if host == "hh.ru" or host.endswith(".hh.ru") else "другой сайт"
+        path = parts.path.lower()
+        kind = "капча" if "captcha" in path else "вход" if "account/login" in path else "вакансия" if re.fullmatch(r"/vacancy/[0-9]+/?", path) else "другая страница"
+        return site + "/" + kind
+    body = response.text.lower()
+    labels = [label for pattern, label in [
+        (r"captcha|капч|подтвердите.{0,30}человек", "есть маркер проверки человека"),
+        (r"access denied|forbidden|доступ запрещ", "есть текст запрета доступа"),
+        (r"proxy error|proxy authentication", "есть текст ошибки прокси"),
+        (r"account/login", "есть ссылка входа (сама по себе не требует входа)")]
+        if re.search(pattern, body)]
+    chain = [f"{r.status_code}:{route(r.url)}" for r in list(response.history) + [response]]
+    mime = response.headers.get("Content-Type", "").split(";")[0].strip().lower()
+    mime = mime if mime in {"text/html", "application/json", "text/plain"} else "другой/не указан"
+    return f"Ответ HH: {' -> '.join(chain)}; тип {mime}; размер {len(response.content)} байт; " + ("; ".join(labels) or "известных маркеров нет")
+
+
+class HHAccessRestriction(RuntimeError):
+    """Confirmed response category, without storing headers or redirect tokens."""
+
+    def __init__(self, status, category, detail):
+        self.status = status
+        self.category = category
+        self.summary = f"HH: {category} (HTTP {status}) — очередь сохранена"
+        super().__init__(f"hh.ru ограничил доступ: {category} (HTTP {status}). {detail} "
+                         "По одному ответу нельзя определить, затронута только эта страница или весь доступ. "
+                         "Автоматический повтор отключён.")
+
+
 class HHClient:
     """Читает HH: публичный поиск либо рекомендации с cookies аккаунта."""
 
@@ -198,19 +233,36 @@ class HHClient:
         self.session = requests.Session()
         self.session.headers.update(BROWSER_HEADERS)
         if cookie:
-            self.session.headers["Cookie"] = cookie.strip()
+            # Scope account credentials to HH, including redirects.
+            for part in cookie.split(";"):
+                name, sep, value = part.strip().partition("=")
+                if sep and name:
+                    self.session.cookies.set(name, value, domain=".hh.ru", path="/", secure=True)
 
     def _get(self, url, **kwargs):
+        before_request = getattr(self, "before_request", None)
+        if before_request:
+            before_request()
         r = self.session.get(url, timeout=30, allow_redirects=True, **kwargs)
-        if r.status_code in (403, 429) or "captcha" in r.url:
+        path = urlsplit(r.url).path.lower()
+        if r.status_code in (403, 429) or "captcha" in path:
+            self.log(hh_response_diagnostic(r))
+        if re.search(r"(?:^|/)captcha(?:[/.]|$)", path):
+            raise HHAccessRestriction(r.status_code, "страница капчи",
+                                      "Сервер направил запрос на страницу проверки.")
+        if r.status_code == 429:
+            retry = r.headers.get("Retry-After", "")
+            advice = "Сервер ограничил частоту запросов."
+            if re.fullmatch(r"[0-9]{1,8}", retry):
+                advice += f" Retry-After: {int(retry)} с (указание сервера, не гарантия восстановления доступа)."
+            raise HHAccessRestriction(429, "слишком много запросов", advice)
+        if r.status_code == 403:
+            raise HHAccessRestriction(403, "доступ запрещён",
+                                      "Этот статус сам по себе не подтверждает капчу.")
+        if "account/login" in path:
             raise RuntimeError(
-                "hh.ru временно ограничил доступ (капча). Подождите "
-                "10–15 минут и увеличьте паузы между запросами."
-            )
-        if "account/login" in r.url:
-            raise RuntimeError(
-                "hh.ru перенаправил на страницу входа — cookie устарели. "
-                "Скопируйте свежие cookie из браузера (вкладка «Аккаунт HH»)."
+                "hh.ru перенаправил на страницу входа. Для запроса требуется авторизация; "
+                "это не доказывает, что сохранённые cookies устарели."
             )
         r.raise_for_status()
         return r
@@ -283,7 +335,22 @@ class HHClient:
 
     def description(self, url):
         """Полное описание вакансии из JSON-LD (schema.org JobPosting)."""
+        self.description_from_network = False
+        parts = urlsplit(url)
+        match = re.fullmatch(r"/vacancy/([0-9]+)/?", parts.path)
+        host = parts.hostname or ""
+        if match and (host == "hh.ru" or host.endswith(".hh.ru")):
+            local = os.path.join(CACHE_DIR, "browser_descriptions", match[1] + ".json")
+            if os.path.isfile(local):
+                with open(local, encoding="utf-8") as source:
+                    saved = json.load(source)
+                description = saved.get("description")
+                if saved.get("id") != match[1] or not isinstance(description, str) or not description.strip():
+                    raise ValueError("Сохранённое описание повреждено. Загрузите HTML заново.")
+                self.log(f"Описание HH {match[1]}: из сохранённой страницы браузера ({saved.get('saved_at', 'дата неизвестна')}); актуальность не проверяется.")
+                return description
         r = self._get(url)
+        self.description_from_network = True
         return extract_jobposting_description(r.text)
 
 
@@ -686,8 +753,8 @@ class LLMClient(StreamingLLMClient):
         facts, issues = verify_facts(materialize(raw, lines), vacancy_text)
         attempts = [json.loads(json.dumps(raw))]
         # Repair unsupported evidence once; never silently accept an invalid claim.
-        if issues and decide(facts, issues, getattr(self, 'decision_policy', None))[0] == 'REVIEW':
-            repair_keys = {i.split(':')[0] for i in issues}
+        repair_keys = {i.split(':')[0] for i in issues} & FACT_SCHEMA['properties'].keys()
+        if repair_keys and decide(facts, issues, getattr(self, 'decision_policy', None))[0] == 'REVIEW':
             self.response_schema = dict(FACT_SCHEMA, required=sorted(repair_keys),
                 properties={k: FACT_SCHEMA['properties'][k] for k in repair_keys})
             def valid_repair(content):
@@ -699,13 +766,13 @@ class LLMClient(StreamingLLMClient):
             try:
                 content = self._chat_retrying(
                     FACT_PROMPT + '\nВерни ТОЛЬКО перечисленные неподтверждённые поля, остальные поля не генерируй. Повторная проверка. Исправь ссылки на строки и учитывай разделы. '
-                    'Неподтверждённые поля: ' + ', '.join(i.split(':')[0] for i in issues) +
+                    'Неподтверждённые поля: ' + ', '.join(sorted(repair_keys)) +
                     '. Не повторяй ошибочную классификацию. Опыт с инструментами — tools; '
                     'наставничество не означает no_experience. Вот предыдущий ответ: ' +
                     json.dumps(raw, ensure_ascii=False),
                     numbered, temperature=0.1, max_tokens=4000, validator=valid_repair)
                 repaired = parse_facts(content)
-                for key in {i.split(':')[0] for i in issues}:
+                for key in repair_keys:
                     raw[key] = repaired[key]
                 attempts.append(repaired)
                 facts, issues = verify_facts(materialize(raw, lines), vacancy_text)
@@ -1002,6 +1069,11 @@ class Worker(threading.Thread):
         self.profile = profile
         self.q = out_queue
         self.stop_event = stop_event
+        self.finish_reason = None
+        self.checked_count = 0
+        self.queue_scope = None
+        self.hh_forbidden_streak = 0
+        self.hh_forbidden_total = 0
 
     def log(self, msg):
         self.q.put(("log", msg))
@@ -1014,6 +1086,22 @@ class Worker(threading.Thread):
                 f.write(f"[{stamp}] {msg}\n")
         except OSError:
             pass
+
+    def _handle_description_restriction(self, error):
+        if (isinstance(error, HHAccessRestriction) and error.status == 403
+                and error.category == "доступ запрещён"):
+            self.hh_forbidden_streak += 1
+            self.hh_forbidden_total += 1
+            if self.hh_forbidden_streak < 2 and self.hh_forbidden_total < 3:
+                self.log("Вакансия с HTTP 403 отложена до нажатия «Вернуть отложенные»; повторять её в этом прогоне не буду. "
+                         "Пауза 60 секунд перед следующей вакансией. Стоп прерывает паузу.")
+                self.stop_event.wait(60)
+                return
+            self.finish_reason = ("Повторные HTTP 403 от HH: "
+                                  f"{self.hh_forbidden_streak} подряд, {self.hh_forbidden_total} за прогон — очередь сохранена")
+        else:
+            self.finish_reason = error.summary if isinstance(error, HHAccessRestriction) else "Источник ограничил доступ — очередь сохранена"
+        self.stop_event.set()
 
     def _role_names(self):
         """Имена категорий: из кэша, а если его нет (например, после
@@ -1042,6 +1130,18 @@ class Worker(threading.Thread):
         except (KeyError, AttributeError):
             return {}
 
+    def _before_hh_request(self):
+        if self.stop_event.is_set():
+            raise RuntimeError("Запрос отменён: поиск остановлен.")
+        low = max(1.0, float(self.cfg.get("min_delay", 20)))
+        high = max(low, float(self.cfg.get("max_delay", 30)))
+        previous = getattr(self, "_last_hh_request", None)
+        if previous is not None:
+            wait = max(0, random.uniform(low, high) - (time.monotonic() - previous))
+            if self.stop_event.wait(wait):
+                raise RuntimeError("Запрос отменён: поиск остановлен.")
+        self._last_hh_request = time.monotonic()
+
     def pause(self):
         """Случайная пауза в человеческом темпе."""
         delay = random.uniform(self.cfg["min_delay"], self.cfg["max_delay"])
@@ -1055,8 +1155,20 @@ class Worker(threading.Thread):
         try:
             self._run()
         except Exception as e:  # noqa: BLE001 — показываем любую ошибку в GUI
+            self.finish_reason = "Поиск прерван из-за ошибки"
             self.log(f"ОШИБКА: {e}")
         finally:
+            remaining = None
+            if getattr(self, "search_cache", None) and self.queue_scope is not None:
+                try:
+                    remaining = len(self.search_cache.pending(self.queue_scope))
+                except Exception:
+                    pass
+            reason = self.finish_reason or ("Остановлено вами" if self.stop_event.is_set() else "Очередь обработана")
+            summary = f"{reason}. Проверено: {self.checked_count}."
+            if remaining is not None:
+                summary += f" Осталось в очереди: {remaining}. Отложено: {len(self.search_cache.deferred_ids(self.queue_scope))}."
+            self.log(summary)
             if getattr(self, "store", None) is not None:
                 try:
                     if getattr(self, "writer", None) is not None:
@@ -1067,12 +1179,13 @@ class Worker(threading.Thread):
                     self.store.close()
                     if getattr(self, "search_cache", None):
                         self.search_cache.close()
-            self.q.put(("done", None))
+            self.q.put(("done", summary))
 
     def _run(self):
         cfg = self.cfg
         run_started = time.monotonic()
         hh = HHClient(self.log)
+        hh.before_request = self._before_hh_request
         llm = LLMClient(cfg["lm_url"], cfg["lm_model"], self.log,
                         self.stop_event)
         llm.decision_policy = cfg.get('decision_policy', DEFAULT_POLICY)
@@ -1098,17 +1211,29 @@ class Worker(threading.Thread):
 
         profile_hash = evaluation_fingerprint(
             self.profile, cfg, llm.model, llm_fast.model,
-            [SYSTEM_PROMPT, TRIAGE_PROMPT, FACT_PROMPT, "evidence-rules-v9"])
+            [SYSTEM_PROMPT, TRIAGE_PROMPT, FACT_PROMPT, "evidence-rules-v13"])
         self.store = EvaluationStore(os.path.join(CACHE_DIR, "evaluations.sqlite3"),
                                      profile_hash)
         self.search_cache = SearchCache(os.path.join(CACHE_DIR, "search.sqlite3"))
         scope = search_scope(cfg, profile_hash)
+        self.queue_scope = scope
+        self.search_cache.migrate_deferred(scope, self.store.forbidden_ids())
+        if cfg.get("restore_deferred"):
+            restored = self.search_cache.restore_deferred(scope)
+            self.log(f"Возвращено отложенных вакансий: {restored}.")
+        self.log(f"Отложено из-за HTTP 403: {len(self.search_cache.deferred_ids(scope))}. Обычный поиск их не запрашивает.")
         llm.fact_cache = self.search_cache
         llm.context_length = cfg.get("model_context", 8192)
         writer = ResultWriter(profile_hash)
         self.writer = writer
         seen = self.store.completed_ids()
         attempted = set()  # Failed/incomplete entries retry on the next launch.
+        auto_resume = (cfg.get("auto_continue_queue", False)
+                       and not cfg.get("resume_queue_only")
+                       and any(i['id'] not in seen for i in self.search_cache.pending(scope)))
+        if auto_resume:
+            cfg = dict(cfg, resume_queue_only=True)
+            self.log("Сначала проверяю сохранённую очередь. Новый сбор пока не нужен.")
         self._write_top(writer, cfg)
         last_top_update = time.monotonic()
         self.log(f"Уже завершено с текущими правилами и моделями: {len(seen)} вакансий — "
@@ -1125,7 +1250,12 @@ class Worker(threading.Thread):
         # площадка ориентирована на готовых специалистов, стажировок и
         # junior-позиций начального уровня там почти нет.
         passes = []
-        hh_auth = None
+        cookie = (cfg.get("hh_cookie", "") or "").strip()
+        hh_auth = HHClient(self.log, cookie=cookie) if cookie else None
+        if hh_auth:
+            hh_auth.before_request = self._before_hh_request
+        self.log("Описания HH: с сохранённой сессией аккаунта." if hh_auth else
+                 "Описания HH: без авторизации (cookies не заданы).")
         resume_only = bool(cfg.get("recs_enabled") and cfg.get("hh_resume_only"))
         habr = (HabrClient(self.log)
                 if cfg.get("habr_enabled") and not resume_only else None)
@@ -1137,7 +1267,7 @@ class Worker(threading.Thread):
             passes.extend((f"запрос «{q}»", {"query": q}) for q in queries)
         if cfg["role_ids"] and not resume_only:
             if cfg.get("split_roles"):
-                names = self._role_names()
+                names = {} if cfg.get("resume_queue_only") else self._role_names()
                 for rid in cfg["role_ids"]:
                     passes.append(
                         (f"категория «{names.get(rid, rid)}»",
@@ -1154,7 +1284,6 @@ class Worker(threading.Thread):
                                cfg.get("resume_hash", "") or "")
             cookie = (cfg.get("hh_cookie", "") or "").strip()
             if hash_m and cookie:
-                hh_auth = HHClient(self.log, cookie=cookie)
                 passes.append(("рекомендации HH под резюме",
                                {"resume": hash_m.group(0), "auth": True}))
             else:
@@ -1195,10 +1324,7 @@ class Worker(threading.Thread):
         if cfg.get('search_mode') == 'Быстрый HH':
             passes = [(label, src) for label, src in passes if not src.get('source')]
         if experience == 'entry_pair':
-            regular = [(label, src) for label, src in passes if not src.get('source') and not src.get('resume')]
-            rest = [(label, src) for label, src in passes if src.get('source') or src.get('resume')]
-            passes = [(label + ' · без опыта', dict(src, experience='noExperience')) for label, src in regular] + [
-                (label + ' · 1–3 года', dict(src, experience='between1And3')) for label, src in regular] + rest
+            passes = entry_search_passes(passes)
             experience = ''
 
         exclude = [w.strip().lower()
@@ -1211,28 +1337,38 @@ class Worker(threading.Thread):
 
         checked = suitable_count = skipped_count = 0
 
-        if not passes:
+        if not passes and not cfg.get("resume_queue_only"):
             raise RuntimeError("Нет доступных источников: проверьте настройки поиска и рекомендации.")
 
         while True:
-            for previous in self.search_cache.pending(scope):
+            for previous in self.search_cache.pending(scope, include_deferred=True):
                 if previous['id'] in seen:
                     self.search_cache.remove(scope, previous['id'])
             pending = [i for i in self.search_cache.pending(scope) if i['id'] not in seen and i['id'] not in attempted]
-            queued_ids = {i['id'] for i in pending}
+            queued_ids = {i['id'] for i in pending} | self.search_cache.deferred_ids(scope)
             limit = int(cfg.get('max_checks', 0))
             collect_cap = max(50, limit * 2) if limit and cfg.get('search_mode') == 'Быстрый HH' else 0
             if pending:
                 self.log(f"Продолжаю сохранённую очередь: {len(pending)} вакансий.")
             collection_started = time.monotonic()
-            self.log("Собираю вакансии и проверяю названия…")
-            for qi, (label, source) in enumerate(passes):
+            if cfg.get("resume_queue_only"):
+                self.log("Проверяю сохранённую очередь без сбора новых вакансий.")
+                if not pending:
+                    self.finish_reason = "Нет сохранённой очереди для текущих настроек"
+            else:
+                self.log("Собираю вакансии и проверяю названия…")
+            offset = self.search_cache.source_position(scope) % max(1, len(passes))
+            ordered_passes = ordered_search_passes(passes, offset)
+            for qi, (source_index, (label, source)) in enumerate([] if cfg.get("resume_queue_only") else ordered_passes):
                 if self.stop_event.is_set() or (collect_cap and len(pending) >= collect_cap):
                     break
                 self.log(f"— Источник {qi + 1}/{len(passes)}: {label}")
                 src_skipped = skipped_count
                 src_new = 0
 
+                # Advance only after starting a source; capped runs won't always
+                # spend their entire collection budget on the same first queries.
+                self.search_cache.set_source_position(scope, (source_index + 1) % len(passes))
                 src_kind = source.get("source")
                 if src_kind == "habr":
                     client = habr
@@ -1268,8 +1404,12 @@ class Worker(threading.Thread):
                                 roles=source.get("roles"),
                             )
                     except (requests.RequestException, RuntimeError) as e:
-                        self.log(f"Источник пропущен: {e}")
+                        if self.stop_event.is_set():
+                            break
+                        self.source_failures = getattr(self, "source_failures", 0) + 1
+                        self.log(f"Источник «{label}», страница {page + 1}: сбор не завершён: {e}")
                         if 'ограничил доступ' in str(e):
+                            self.finish_reason = e.summary if isinstance(e, HHAccessRestriction) else 'Источник ограничил доступ — очередь сохранена'
                             self.stop_event.set()
                         break
                     self._last_description_request = time.monotonic()
@@ -1374,19 +1514,13 @@ class Worker(threading.Thread):
 
             self.log(f"Сбор завершён за {(time.monotonic()-collection_started):.1f} с. Полная проверка: {len(pending)} вакансий.")
             # One evaluation stage avoids reloading the large model per page.
-            for item in prioritize(pending):
+            self.log("Порядок проверки: стажировки и без опыта → junior с неуказанным опытом → остальные → 1–3 года. Внутри группы сначала техническое сопровождение.")
+            for item in prioritize(pending, entry_first=True):
                 if limit and checked >= limit:
                     self.log(f"Достигнут лимит: {limit} полных проверок. Очередь сохранена.")
                     break
                 if self.stop_event.is_set():
                     break
-                # Generation time counts toward the interval between description requests.
-                interval = random.uniform(cfg['min_delay'], cfg['max_delay'])
-                wait = max(0, interval - (time.monotonic() - getattr(self, '_last_description_request', 0)))
-                if self.stop_event.wait(wait):
-                    break
-                self._last_description_request = time.monotonic()
-
                 attempted.add(item["id"])
                 description_started = time.monotonic()
                 try:
@@ -1397,21 +1531,44 @@ class Worker(threading.Thread):
                     elif item["id"].startswith("tg-"):
                         desc_client = telegram
                     else:
-                        desc_client = hh
-                    description = desc_client.description(
-                        item["url"])
+                        desc_client = hh_auth or hh
+                    description = self.search_cache.cached_description(item["url"])
+                    fetched_description = description is None
+                    if fetched_description:
+                        if desc_client is None:
+                            raise RuntimeError("Источник вакансии недоступен при текущих настройках; вакансия сохранена в очереди.")
+                        # Only a real load needs pacing; cache reads must not
+                        # postpone the next request or pretend HH recovered.
+                        if not isinstance(desc_client, HHClient):
+                            interval = random.uniform(cfg['min_delay'], cfg['max_delay'])
+                            wait = max(0, interval - (time.monotonic() - getattr(self, '_last_description_request', 0)))
+                            if self.stop_event.wait(wait):
+                                break
+                            self._last_description_request = time.monotonic()
+                        description = desc_client.description(item["url"])
+                        self.search_cache.save_description(item["url"], description)
+                    else:
+                        self.log("Описание из локального кэша (не старше суток); без запроса к сайту.")
                 except (requests.RequestException, RuntimeError, ValueError) as e:
+                    if self.stop_event.is_set():
+                        break
+                    if isinstance(e, HHAccessRestriction) and e.status == 403 and e.category == "доступ запрещён":
+                        self.search_cache.defer(scope, item["id"])
                     self._record_issue(writer, item, "incomplete", str(e))
                     if "ограничил доступ" in str(e):
-                        self.stop_event.set()
+                        self._handle_description_restriction(e)
                     continue
                 if not description.strip():
                     self._record_issue(writer, item, "incomplete",
                                        "Описание не найдено; нужна повторная загрузка.")
                     continue
 
+                if (fetched_description and isinstance(desc_client, HHClient)
+                        and getattr(desc_client, "description_from_network", False)):
+                    self.hh_forbidden_streak = 0
                 network_seconds = time.monotonic() - description_started
                 checked += 1
+                self.checked_count = checked
                 vacancy_text = (
                     f"Должность: {item['name']}\n"
                     f"Компания: {item['employer']}\n"
@@ -1466,13 +1623,31 @@ class Worker(threading.Thread):
 
             self._write_top(writer, cfg)
             self.log(
-                f"Готово. Отсеяно на быстрых фильтрах: {skipped_count}, "
+                f"Итоги прогона. Отсеяно на быстрых фильтрах: {skipped_count}, "
                 f"проверено полностью: {checked}, подходящих: {suitable_count}. "
                 f"Файлы — в папке results (top.md — лучшие сверху)."
             )
 
             self.log(f"Время прогона: {(time.monotonic()-run_started)/60:.1f} мин. Осталось в очереди: {len(self.search_cache.pending(scope))}.")
-            if self.stop_event.is_set() or cfg.get('single_pass', True) or (limit and checked >= limit):
+            if (auto_resume and not self.stop_event.is_set()
+                    and not getattr(self, "had_processing_issue", False)
+                    and not (limit and checked >= limit)
+                    and not self.search_cache.pending(scope)):
+                auto_resume = False
+                cfg = dict(cfg, resume_queue_only=False)
+                self.log("Сохранённая очередь обработана. Перехожу к сбору новых вакансий.")
+                continue
+            if self.stop_event.is_set() or cfg.get('resume_queue_only') or cfg.get('single_pass', True) or (limit and checked >= limit):
+                if not self.finish_reason and not self.stop_event.is_set():
+                    remaining = len(self.search_cache.pending(scope))
+                    if limit and checked >= limit and remaining:
+                        self.finish_reason = "Достигнут лимит проверок"
+                    elif remaining:
+                        self.finish_reason = "Проход завершён; остались вакансии для повторной попытки"
+                    else:
+                        self.finish_reason = "Очередь обработана"
+                    if getattr(self, "source_failures", 0):
+                        self.finish_reason += f"; неполный сбор: ошибок источников — {self.source_failures} (подробности в журнале)"
                 break
 
             # Приложение оставляют работать без присмотра — вместо того
@@ -1491,12 +1666,15 @@ class Worker(threading.Thread):
                 time.sleep(0.2)
 
     def _record_issue(self, writer, item, status, reason):
+        self.had_processing_issue = True
         self.store.mark(item["id"], status, reason)
         writer.write_failed(item, reason)
+        writer.write(item, 0, "REVIEW", None, "общее",
+                     "Проверка не завершена: " + reason, None)
         self.log(f"Нужна проверка: {item['name']}: {reason} "
-                 "Повторная попытка — при следующем запуске.")
+                 + ("Возврат — кнопкой «Вернуть отложенные»." if item["id"] in self.search_cache.deferred_ids(self.queue_scope) else "Повторная попытка — при следующем запуске."))
         self.q.put(("result", {
-            "score": None, "name": item["name"], "employer": item["employer"],
+            "score": None, "verdict": "REVIEW", "name": item["name"], "employer": item["employer"],
             "salary": item["salary"], "url": item["url"], "suitable": None,
             "direction": None, "resume": None, "reason": reason,
         }))
@@ -1575,7 +1753,7 @@ class Worker(threading.Thread):
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("HH Assistant — подбор вакансий с локальной нейросетью")
+        root.title("WORKAholic — подбор вакансий с локальной нейросетью")
         root.geometry("1000x760")
         root.minsize(880, 620)
 
@@ -1636,7 +1814,7 @@ class App:
         с момента последнего «сброса логов» (архивные results/archive-*/
         сознательно не трогаем: это прошлые отрезки ДО сброса, пользователь
         явно попросил не тащить их сюда). Возвращает список вакансий,
-        REJECT исключён сразу — смотреть на явно неподходящие смысла нет.
+        REJECT доступен для проверки ложных отказов через фильтр истории.
         Лучшие сверху. Чистая функция, таблицу в GUI не трогает —
         используется только окном истории.
 
@@ -1674,16 +1852,13 @@ class App:
                         verdict = old_verdict_map[verdict]
                     # Файл дописывается хронологически — последняя
                     # встреченная строка для URL и есть самая свежая.
-                    if verdict == "REJECT":
-                        rows.pop(url, None)
-                        continue
                     rows[url] = {
                         "score": score_i, "verdict": verdict,
                         "name": name, "employer": employer,
                         "salary": salary, "url": url, "reason": reason,
                         "direction": direction or None,
                         "resume": resume,
-                        "suitable": None if verdict == "REVIEW" else True,
+                        "suitable": None if verdict == "REVIEW" else verdict != "REJECT",
                     }
         except OSError:
             return []
@@ -1691,6 +1866,20 @@ class App:
             rows.values(),
             key=lambda v: (-v["score"],
                            self._DIRECTION_RANK.get(v["direction"], 4)))
+
+    def on_restore_results(self):
+        """Restore saved results since the last explicit data reset, without searching."""
+        existing_urls = {v.get("url") for group in self.result_data.values()
+                         for v in (group.get("variants") or [group])}
+        for row in self._read_history_rows():
+            if row["url"] not in existing_urls:
+                self.ui.add_result(row, refresh=False)
+                existing_urls.add(row["url"])
+        self.ui.query.set("")
+        self.ui.refresh_results()
+        self.ui.show("Обзор")
+        self.log("Сохранённые результаты возвращены в таблицу (все запуски после последнего сброса). "
+                 "Выберите «Подходящие» или «Нужно уточнить». Счётчики относятся к текущему запуску.")
 
     def on_open_history(self):
         """Отдельное окно «История» — весь накопленный results.csv +
@@ -1729,7 +1918,7 @@ class App:
         var_verdict = tk.StringVar(value="Все")
         cmb_verdict = ttk.Combobox(
             filter_row, textvariable=var_verdict,
-            values=["Все", "STRONG_MATCH", "MATCH", "WEAK", "REVIEW"],
+            values=["Все", "STRONG_MATCH", "MATCH", "WEAK", "REVIEW", "REJECT"],
             state="readonly", width=14)
         cmb_verdict.pack(side="left")
 
@@ -1850,7 +2039,7 @@ class App:
         if dmin > dmax:
             dmin, dmax = dmax, dmin
         self.cfg.update({
-            "decision_policy": {**{k: v.get() for k,v in self.ui.policy_vars.items()}, "minimum_net_salary": max(0, int(self.ui.minimum_salary.get()))},
+            "decision_policy": {**self.cfg.get("decision_policy", {}), **{k: v.get() for k,v in self.ui.policy_vars.items()}, "minimum_net_salary": max(0, int(self.ui.minimum_salary.get()))},
             "search_mode": self.var_search_mode.get(),
             "max_checks": max(0, int(self.var_max_checks.get())),
             "single_pass": self.var_single_pass.get(),
@@ -2002,6 +2191,28 @@ class App:
         ttk.Button(btns, text="Отмена", command=close).pack(side="right")
         dlg.protocol("WM_DELETE_WINDOW", close)
 
+    def on_import_browser_page(self):
+        if self.ui.running:
+            messagebox.showinfo("Страница браузера", "Дождитесь остановки поиска перед загрузкой файла.")
+            return
+        path = filedialog.askopenfilename(title="Сохранённая страница вакансии HH", filetypes=[("Страница HTML", "*.html *.htm")])
+        if not path:
+            return
+        try:
+            if os.path.getsize(path) > 20 * 1024 * 1024:
+                raise ValueError("Файл больше 20 МБ. Сохраните только HTML страницы.")
+            with open(path, encoding="utf-8-sig") as source:
+                vid, description = saved_hh_description(source.read())
+            target = os.path.join(CACHE_DIR, "browser_descriptions", vid + ".json")
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with atomic_text(target) as output:
+                json.dump(dict(id=vid, description=description, saved_at=datetime.now().isoformat(timespec="seconds")), output, ensure_ascii=False)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Страница браузера", str(exc))
+            return
+        self.log(f"Сохранено описание HH {vid} из браузера: {len(description)} символов.")
+        messagebox.showinfo("Описание сохранено", "Нажмите «Продолжить очередь». Для этой вакансии будет использован файл, без запроса к HH. Файл не добавляет новую вакансию в очередь.")
+
     def on_open_profile(self):
         os.startfile(PROFILE_PATH)
 
@@ -2031,9 +2242,17 @@ class App:
         if self.browser_queue.paused:
             self.browser_queue.resume()
             return
-        urls = suitable_urls(self.result_data.values())
+        urls = self.visible_vacancy_urls()
         if urls:
             self.browser_queue.start(urls)
+
+    def visible_vacancy_urls(self):
+        return visible_urls(self.result_data[iid] for iid in self.tree.get_children("")
+                            if iid in self.result_data)
+
+    def on_cancel_opening(self):
+        self.browser_queue.cancel()
+        self.ui.update_bulk_button()
 
     def _browser_queue_update(self, message):
         self.lbl_status.configure(text=message)
@@ -2097,7 +2316,7 @@ class App:
         self.txt_reason.insert("1.0", text)
         self.txt_reason.configure(state="disabled")
 
-    def on_start(self):
+    def on_start(self, resume_queue_only=False, restore_deferred=False, restore_results=False):
         try:
             cfg = self._collect_config()
         except (RuntimeError, OSError, ValueError, tk.TclError) as exc:
@@ -2141,7 +2360,12 @@ class App:
         self.btn_stop.configure(state="normal")
         self.progress.start(12)
         self.lbl_status.configure(text="Работаю…")
-        self.ui.set_running(True)
+        continuing = restore_results or restore_deferred
+        self.ui.set_running(True, preserve_results=continuing)
+        if continuing:
+            self.on_restore_results()
+        cfg = dict(cfg, resume_queue_only=resume_queue_only, restore_deferred=restore_deferred,
+                   auto_continue_queue=not resume_queue_only and not restore_deferred)
         self.worker = Worker(cfg, profile, self.queue, self.stop_event)
         self.worker.start()
         self.log("Запуск…")
@@ -2170,6 +2394,8 @@ class App:
                     self.btn_stop.configure(state="disabled")
                     self.progress.stop()
                     self.ui.set_running(False)
+                    if payload:
+                        self.lbl_status.configure(text=payload)
         except queue.Empty:
             pass
         self.root.after(150, self._poll_queue)

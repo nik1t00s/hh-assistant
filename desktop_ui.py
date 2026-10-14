@@ -5,13 +5,13 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from browser_queue import suitable_urls
 
-BG = "#f3f5f1"
+BG = "#f4f5f8"
 PAPER = "#ffffff"
-INK = "#203b36"
-MUTED = "#697b73"
-LINE = "#e0e7df"
-ACCENT = "#287568"
-NAV = "#183b34"
+INK = "#202b40"
+MUTED = "#65728a"
+LINE = "#e0e5ee"
+ACCENT = "#355de8"
+NAV = "#182238"
 VERDICTS = {"STRONG_MATCH": "Отлично подходит", "MATCH": "Подходит",
             "WEAK": "Запасной вариант", "REVIEW": "Нужно уточнить", "REJECT": "Не подходит"}
 
@@ -35,11 +35,11 @@ def card(parent, title=None, hint=None):
 
 
 def text_input(parent, value="", height=3):
-    widget = tk.Text(parent, height=height, width=20, wrap="word", bg="#f8faf7",
+    widget = tk.Text(parent, height=height, width=20, wrap="word", bg="#f8f9fc",
                      fg=INK, insertbackground=ACCENT, relief="flat", bd=0,
                      highlightthickness=1, highlightbackground=LINE,
                      highlightcolor=ACCENT, font=("Segoe UI", 10), padx=12, pady=9,
-                     selectbackground="#d9eae1", selectforeground=INK, undo=True)
+                     selectbackground="#e8eeff", selectforeground=INK, undo=True)
     widget.insert("1.0", value)
     widget.pack(fill="x", pady=(6, 12))
     return widget
@@ -106,30 +106,30 @@ class DesktopUI:
         style.configure("TLabel", background=BG)
         style.configure("TButton", padding=(14, 9), background=PAPER, bordercolor=LINE,
                         lightcolor=PAPER, darkcolor=PAPER, focuscolor=ACCENT)
-        style.map("TButton", background=[("active", "#eaf0e7"), ("disabled", "#edf0eb")],
-                  foreground=[("disabled", "#9ca89f")])
+        style.map("TButton", background=[("active", "#edf1fc"), ("disabled", "#edf0f5")],
+                  foreground=[("disabled", "#929bad")])
         style.configure("Accent.TButton", background=ACCENT, foreground="white",
                         bordercolor=ACCENT, font=("Segoe UI", 10, "bold"))
-        style.map("Accent.TButton", background=[("active", "#1d5f55"), ("disabled", "#bdccc2")],
+        style.map("Accent.TButton", background=[("active", "#284bc4"), ("disabled", "#b8c5e9")],
                   foreground=[("disabled", "white")])
-        style.configure("TEntry", fieldbackground="#f8faf7", padding=9, bordercolor=LINE)
-        style.configure("TCombobox", fieldbackground="#f8faf7", padding=8, bordercolor=LINE,
+        style.configure("TEntry", fieldbackground="#f8f9fc", padding=9, bordercolor=LINE)
+        style.configure("TCombobox", fieldbackground="#f8f9fc", padding=8, bordercolor=LINE,
                         arrowcolor=ACCENT)
-        style.map("TCombobox", fieldbackground=[("readonly", "#f8faf7")],
-                  selectbackground=[("readonly", "#f8faf7")], selectforeground=[("readonly", INK)])
-        style.configure("TSpinbox", fieldbackground="#f8faf7", padding=7, bordercolor=LINE)
+        style.map("TCombobox", fieldbackground=[("readonly", "#f8f9fc")],
+                  selectbackground=[("readonly", "#f8f9fc")], selectforeground=[("readonly", INK)])
+        style.configure("TSpinbox", fieldbackground="#f8f9fc", padding=7, bordercolor=LINE)
         style.configure("Card.TCheckbutton", background=PAPER, padding=(0, 6))
         style.map("Card.TCheckbutton", background=[("active", PAPER)])
         style.configure("Treeview", background=PAPER, fieldbackground=PAPER, foreground=INK,
-                        rowheight=44, borderwidth=0, font=("Segoe UI", 10))
-        style.configure("Treeview.Heading", background="#edf2eb", foreground=MUTED,
+                        rowheight=52, borderwidth=0, font=("Segoe UI", 10))
+        style.configure("Treeview.Heading", background="#f6f8fc", foreground=MUTED,
                         padding=(10, 12), font=("Segoe UI", 9, "bold"), relief="flat")
-        style.map("Treeview", background=[("selected", "#dcebe1")], foreground=[("selected", "#153e33")])
+        style.map("Treeview", background=[("selected", "#e8eeff")], foreground=[("selected", "#233f99")])
         style.configure("Horizontal.TProgressbar", background=ACCENT, troughcolor=LINE,
                         borderwidth=0, thickness=3)
-        style.configure("Vertical.TScrollbar", background="#d8e1d7", troughcolor=BG,
+        style.configure("Vertical.TScrollbar", background="#cdd5e4", troughcolor=BG,
                         borderwidth=0, arrowsize=10, bordercolor=BG, lightcolor=BG, darkcolor=BG)
-        style.configure("Horizontal.TScrollbar", background="#d8e1d7", troughcolor=BG,
+        style.configure("Horizontal.TScrollbar", background="#cdd5e4", troughcolor=BG,
                         borderwidth=0, arrowsize=10, bordercolor=BG, lightcolor=BG, darkcolor=BG)
         for direction, sticky in (("Vertical", "ns"), ("Horizontal", "we")):
             style.layout(f"{direction}.TScrollbar", [(f"{direction}.Scrollbar.trough", {
@@ -142,13 +142,12 @@ class DesktopUI:
         sidebar.pack_propagate(False)
         brand = tk.Frame(sidebar, bg=NAV, padx=24, pady=30)
         brand.pack(fill="x")
-        label(brand, "hh /", 28, "#c3dfb7", True).pack(anchor="w")
-        label(brand, "assistant", 16, "white", True).pack(anchor="w")
-        label(brand, "Твой поиск. Твои правила.", 9, "#a8bfb0").pack(anchor="w", pady=(8, 26))
-        label(sidebar, "    ПРОСТРАНСТВО", 8, "#8faa9b", True).pack(anchor="w", padx=10, pady=(0, 10))
+        label(brand, "hh assistant", 18, "white", True).pack(anchor="w")
+        label(brand, "Место для следующего шага", 9, "#a9b6d0", wraplength=170).pack(anchor="w", pady=(10, 18))
+        label(sidebar, "    РАБОЧЕЕ ПРОСТРАНСТВО", 8, "#a9b6d0", True).pack(anchor="w", padx=10, pady=(0, 10))
         for index, name in enumerate(("Обзор", "Поиск и фильтры", "Источники", "Модель", "Журнал"), 1):
-            button = tk.Button(sidebar, text=f"{index:02}    {name}", anchor="w", relief="flat", bd=0,
-                               bg=NAV, fg="#bed0c4", activebackground="#2a5145", activeforeground="white",
+            button = tk.Button(sidebar, text=name, anchor="w", relief="flat", bd=0,
+                               bg=NAV, fg="#c1cbe0", activebackground="#293854", activeforeground="white",
                                font=("Segoe UI", 10), padx=17, pady=14, cursor="hand2",
                                command=lambda page=name: self.show(page))
             button.pack(fill="x", padx=12, pady=3)
@@ -156,9 +155,15 @@ class DesktopUI:
         footer = tk.Frame(sidebar, bg=NAV, padx=22, pady=24)
         footer.pack(side="bottom", fill="x")
         tk.Button(footer, text="Мой профиль  ↗", anchor="w", bg=NAV, fg="white",
-                  activebackground=NAV, activeforeground="#c3dfb7", relief="flat", bd=0,
+                  activebackground=NAV, activeforeground="#b9caff", relief="flat", bd=0,
                   font=("Segoe UI", 10), cursor="hand2", command=app.on_open_profile).pack(fill="x")
-        self.model_badge = label(footer, "LM Studio", 9, "#9eb6a6", wraplength=160)
+        tk.Button(footer, text="Загрузить HTML вакансии", anchor="w", bg=NAV, fg="white",
+                  relief="flat", bd=0, font=("Segoe UI", 9), cursor="hand2",
+                  command=app.on_import_browser_page).pack(fill="x", pady=(8, 0))
+        app.btn_restore_deferred = ttk.Button(footer, text="Вернуть отложенные",
+            command=lambda: app.on_start(resume_queue_only=True, restore_deferred=True))
+        app.btn_restore_deferred.pack(fill="x", pady=(8, 0))
+        self.model_badge = label(footer, "LM Studio", 9, "#a9b6d0", wraplength=160)
         self.model_badge.pack(anchor="w", pady=(15, 0))
         main = tk.Frame(self.root, bg=BG, padx=28, pady=22)
         main.pack(side="left", fill="both", expand=True)
@@ -170,10 +175,20 @@ class DesktopUI:
         app.btn_start.pack(side="right")
         app.btn_stop = ttk.Button(header, text="Остановить", command=app.on_stop, state="disabled")
         app.btn_stop.pack(side="right", padx=(0, 10))
+        resume_bar = tk.Frame(main, bg=BG)
+        resume_bar.pack(fill="x", pady=(0, 14))
+        label(resume_bar, "Продолжить очередь:", 9, MUTED).pack(side="left", padx=(0, 10))
+        app.btn_resume = ttk.Button(resume_bar, text="Только новые результаты",
+                                    command=lambda: app.on_start(resume_queue_only=True))
+        app.btn_resume.pack(side="left", padx=(0, 10))
+        app.btn_resume_history = ttk.Button(resume_bar, text="С прежними результатами",
+            command=lambda: app.on_start(resume_queue_only=True, restore_results=True))
+        app.btn_resume_history.pack(side="left")
+        label(resume_bar, "Без нового сбора", 9, MUTED).pack(side="left", padx=12)
         bottom = tk.Frame(main, bg=BG)
         bottom.pack(side="bottom", fill="x", pady=(14, 0))
         app.progress = ttk.Progressbar(bottom, mode="indeterminate")
-        app.lbl_status = ttk.Label(bottom, text="Готов к работе", anchor="w", font=("Segoe UI", 9))
+        app.lbl_status = ttk.Label(bottom, text="Готов к работе", anchor="w", font=("Segoe UI", 9), wraplength=850)
         app.lbl_status.pack(fill="x")
         self.container = tk.Frame(main, bg=BG)
         self.container.pack(fill="both", expand=True)
@@ -200,23 +215,23 @@ class DesktopUI:
         self.pages[name].tkraise()
         self.breadcrumb.configure(text=f"РАБОЧЕЕ ПРОСТРАНСТВО  /  {name.upper()}")
         for page, button in self.nav_buttons.items():
-            button.configure(bg="#315749" if page == name else NAV,
-                             fg="white" if page == name else "#bed0c4")
+            button.configure(bg="#304366" if page == name else NAV,
+                             fg="white" if page == name else "#c1cbe0")
 
     def _overview(self):
         app = self.app
-        body = self.page("Обзор", "Твой следующий шаг", "Вакансии по твоим правилам. Всё важное — в одном месте.", scroll=False)
+        body = self.page("Обзор", "Твоя следующая работа", "Запусти поиск. Сравни варианты. Выбери, куда откликнуться.", scroll=False)
         metrics = tk.Frame(body, bg=BG)
-        metrics.pack(fill="x", pady=(0, 20))
+        metrics.pack(fill="x", pady=(0, 14))
         self.metrics = []
         self.metric_boxes = []
         self.metric_hints = []
-        for col, title in enumerate(("ПРОВЕРЕНО", "ПОДХОДИТ", "ОТСЕЯНО")):
+        for col, title in enumerate(("Проверено вакансий", "Подходят тебе", "Отсеяно до оценки")):
             box = tk.Frame(metrics, bg=PAPER, padx=18, pady=13, highlightthickness=1, highlightbackground=LINE)
             box.grid(row=0, column=col, sticky="nsew", padx=(0, 12) if col < 2 else 0)
             self.metric_boxes.append(box)
             metrics.columnconfigure(col, weight=1)
-            label(box, title, 8, MUTED, True).pack(anchor="w")
+            label(box, title, 10, MUTED).pack(anchor="w")
             number = label(box, "—", 25, ACCENT, True)
             number.pack(anchor="w", pady=(4, 0))
             hint = label(box, "за текущий запуск", 9, MUTED)
@@ -229,19 +244,28 @@ class DesktopUI:
         self.count = label(toolbar, "", 9, MUTED)
         self.count.pack(side="left", padx=12)
         ttk.Button(toolbar, text="История ↗", command=app.on_open_history).pack(side="right")
-        self.bulk_button = ttk.Button(toolbar, text="Открыть все вакансии", state="disabled",
+        ttk.Button(toolbar, text="Вернуть результаты", command=app.on_restore_results).pack(side="right", padx=6)
+        actions = tk.Frame(body, bg=BG)
+        actions.pack(fill="x", pady=(0, 12))
+        self.bulk_button = ttk.Button(actions, text="Открыть все вакансии", state="disabled",
                                       command=app.on_open_all_vacancies)
-        self.bulk_button.pack(side="right", padx=(0, 10))
+        self.bulk_button.pack(side="left", padx=(0, 10))
+        self.cancel_bulk_button = ttk.Button(actions, text="Сбросить открытие",
+                                            command=app.on_cancel_opening, state="disabled")
+        self.cancel_bulk_button.pack(side="left", padx=(0, 8))
+        label(actions, "По 50 вкладок · интервал 20 с", 9, MUTED).pack(side="left", padx=8)
         filters = tk.Frame(body, bg=BG)
         filters.pack(fill="x", pady=(0, 12))
         self.query = tk.StringVar()
-        ttk.Entry(filters, textvariable=self.query, width=24).pack(side="left", fill="x", expand=True)
+        label(filters, "Поиск в списке", 9, MUTED).pack(side="left", padx=(0, 10))
+        self.search_entry = ttk.Entry(filters, textvariable=self.query, width=18)
+        self.search_entry.pack(side="left", fill="x", expand=True)
+        self.root.bind("<Control-f>", self.focus_search)
         self.filter = tk.StringVar(value="Подходящие")
-        ttk.Combobox(filters, textvariable=self.filter, state="readonly", width=16,
+        ttk.Combobox(filters, textvariable=self.filter, state="readonly", width=20,
                      values=("Подходящие", "Нужно уточнить", "Все", "На проверку", "Отклонённые")).pack(side="left", padx=(10, 0))
         self.query.trace_add("write", lambda *_: self.refresh_results())
         self.filter.trace_add("write", lambda *_: self.refresh_results())
-        label(body, "Текущий поиск · прошлые результаты доступны в истории", 9, MUTED).pack(anchor="w", pady=(0, 12))
         content = tk.Frame(body, bg=BG)
         content.pack(fill="both", expand=True)
         content.columnconfigure(0, weight=1)
@@ -266,7 +290,7 @@ class DesktopUI:
             app.tree.tag_configure(tag, background=bg, foreground=fg)
         app.tree.bind("<<TreeviewSelect>>", app.on_select_result)
         app.tree.bind("<Double-1>", app.on_open_vacancy)
-        self.empty = label(table, "Пока здесь тихо\n\nНачни поиск — подходящие вакансии\nпоявятся в этом списке.", 11, MUTED)
+        self.empty = label(table, "Всё начинается с поиска\n\nНовые вакансии появятся здесь.\nПрежние — по кнопке «Вернуть результаты».", 10, MUTED)
         self.empty.configure(justify="center", anchor="center")
         detail = tk.Frame(content, bg=PAPER, width=280, padx=18, pady=18,
                           highlightthickness=1, highlightbackground=LINE)
@@ -290,6 +314,7 @@ class DesktopUI:
         self.detail_meta = label(detail, "Здесь будут условия и объяснение оценки.", 10, MUTED, wraplength=216)
         self.detail_meta.pack(anchor="w", pady=(0, 14))
         self.action_var = tk.StringVar(value='Не просмотрено')
+        label(detail, "Твой статус", 9, MUTED).pack(anchor="w", pady=(0, 5))
         self.action_select = ttk.Combobox(detail, textvariable=self.action_var, state='readonly',
             values=['Не просмотрено','Просмотрено','Интересно','Откликнулся','Не подходит','Ответ работодателя'])
         self.action_select.pack(fill='x', pady=(0, 5))
@@ -299,12 +324,19 @@ class DesktopUI:
         self.variant_buttons.pack(fill="x")
         reason_box = tk.Frame(detail, bg=PAPER)
         reason_box.pack(fill="both", expand=True)
+        label(reason_box, "ПОЧЕМУ ТАКАЯ ОЦЕНКА", 8, MUTED, True).pack(anchor="w", pady=(12, 8))
         app.txt_reason = tk.Text(reason_box, width=22, height=12, bg=PAPER, fg=MUTED,
                                   font=("Segoe UI", 10), bd=0, wrap="word", state="disabled",
                                   highlightthickness=0, cursor="arrow")
         app.txt_reason.pack(side="left", fill="both", expand=True)
         self.mode = label(body, "", 9, MUTED)
         self.mode.pack(anchor="w", pady=(12, 0))
+
+    def focus_search(self, _event=None):
+        self.show("Обзор")
+        self.search_entry.focus_set()
+        self.search_entry.selection_range(0, "end")
+        return "break"
 
     def _field(self, parent, title, attr, key, height=3):
         label(parent, title, 10, bold=True).pack(anchor="w", pady=(7, 0))
@@ -531,7 +563,7 @@ class DesktopUI:
         else:
             self.empty.configure(text="Ничего не найдено\n\nПопробуй другой запрос или фильтр." if a.result_data else
                                  "Ищем новые вакансии\n\nРезультаты появятся здесь\nпо мере проверки." if self.running else
-                                 "Пока здесь тихо\n\nНачни поиск — вакансии\nпоявятся в этом списке.")
+                                 "Всё начинается с поиска\n\nНовые вакансии появятся здесь.\nПрежние — по кнопке\n«Вернуть результаты».")
             self.empty.place(relx=.5, rely=.5, anchor="center")
             a.tree.selection_remove(*a.tree.selection())
             self.open_button.configure(state="disabled")
@@ -561,30 +593,37 @@ class DesktopUI:
                            command=lambda url=row['url']: webbrowser.open(url)).pack(fill='x', pady=2)
 
     def update_bulk_button(self):
+        self.cancel_bulk_button.configure(state="normal" if
+            (self.app.browser_queue.active or self.app.browser_queue.paused) else "disabled")
         if self.app.browser_queue.active:
             self.bulk_button.configure(text="Приостановить открытие", state="normal")
         elif self.app.browser_queue.paused:
             remaining = len(self.app.browser_queue.urls) - self.app.browser_queue.opened
             self.bulk_button.configure(text=f"Продолжить · {min(50, remaining)} вакансий", state="normal")
         else:
-            enabled = not self.running and bool(suitable_urls(self.app.result_data.values()))
-            self.bulk_button.configure(text="Открыть все вакансии", state="normal" if enabled else "disabled")
+            count = len(self.app.visible_vacancy_urls())
+            enabled = not self.running and count > 0
+            self.bulk_button.configure(text=f"Открыть список · {count}", state="normal" if enabled else "disabled")
 
     def set_stats(self, skipped, checked, suitable):
         for widget, value in zip(self.metrics, (checked, suitable, skipped)):
             widget.configure(text=str(value))
 
-    def set_running(self, running):
+    def set_running(self, running, preserve_results=False):
         self.running = running
+        self.app.btn_restore_deferred.configure(state="disabled" if running else "normal")
+        self.app.btn_resume.configure(state="disabled" if running else "normal")
+        self.app.btn_resume_history.configure(state="disabled" if running else "normal")
         self.app.btn_start.configure(text="Поиск идёт…" if running else "Начать поиск  →")
         if running:
             # All results have already been persisted by Worker. Reset only the
             # session view, including rows detached by filters, never the history.
-            for iid in tuple(self.app.result_data):
-                self.app.tree.delete(iid)
-            self.app.result_data.clear()
-            self.query.set("")
-            self.filter.set("Подходящие")
+            if not preserve_results:
+                for iid in tuple(self.app.result_data):
+                    self.app.tree.delete(iid)
+                self.app.result_data.clear()
+                self.query.set("")
+                self.filter.set("Подходящие")
             self.app.progress.pack(fill="x", pady=(0, 9), before=self.app.lbl_status)
             self.set_stats(0, 0, 0)
             self.show("Обзор")
@@ -596,6 +635,7 @@ class DesktopUI:
     def _resize(self, event):
         if event.widget is not self.root:
             return
+        self.app.lbl_status.configure(wraplength=max(500, event.width - 280))
         self.app.tree.configure(displaycolumns=("name", "score") if event.width < 1150 else ("name", "employer", "score"))
         compact = event.height < 790
         if compact == self.compact:

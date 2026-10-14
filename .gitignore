@@ -16,5 +16,11 @@
 !/desktop_ui.py
 !/browser_queue.py
 !/evidence_eval.py
+!/AGENTS.md
+!/local-agent/
+!/frontend/
+frontend/node_modules/
+frontend/dist/
+local-agent/config.local.json
 __pycache__/
 *.py[cod]

@@ -19,6 +19,7 @@ class DesktopTests(unittest.TestCase):
         cfg = dict(main.DEFAULT_CONFIG, hh_cookie="synthetic-secret", superjob_cookie="test-secret",
                    lm_model="test-model", telegram_channels="test_channel")
         self.patches = [patch.object(main, "load_config", return_value=cfg),
+                        patch.object(main, "CACHE_DIR", self.temp.name),
                         patch.object(main, "PROFILE_PATH", str(profile)),
                         patch.object(main.App, "_read_history_rows", return_value=[]),
                         patch.object(main, "save_config")]
@@ -99,14 +100,15 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(len(ids),1)
         self.assertEqual(self.app.result_data[ids[0]]['verdict'],'REVIEW')
 
-    def test_bulk_open_waits_for_stop_and_includes_filtered_matches(self):
+    def test_bulk_open_waits_for_stop_and_respects_visible_matches(self):
         ui = self.app.ui
         self.assertTrue(ui.bulk_button.instate(["disabled"]))
         with patch.object(main, "Worker", return_value=Mock()):
             self.app.on_start()
         ui.add_result(self.row("First"))
-        ui.add_result(dict(self.row("Second"), url="https://example.com/2"))
+        ui.add_result(dict(self.row("First second"), url="https://example.com/2"))
         ui.add_result(dict(self.row("Rejected", "REJECT", False), url="https://example.com/3"))
+        ui.add_result(dict(self.row("Hidden match"), url="https://example.com/4"))
         ui.query.set("First")
         self.app.on_stop()
         self.assertTrue(ui.bulk_button.instate(["disabled"]))
@@ -115,15 +117,15 @@ class DesktopTests(unittest.TestCase):
         self.assertFalse(ui.bulk_button.instate(["disabled"]))
         self.app.browser_queue.opener = Mock(return_value=True)
         self.app.on_open_all_vacancies()
-        self.assertEqual(self.app.browser_queue.urls, ["https://example.com", "https://example.com/2"])
-        self.app.browser_queue.opener.assert_called_once_with("https://example.com")
+        self.assertEqual(self.app.browser_queue.urls, ["https://example.com/2", "https://example.com"])
+        self.app.browser_queue.opener.assert_called_once_with("https://example.com/2")
         self.app.on_open_all_vacancies()
         self.assertFalse(self.app.browser_queue.active)
         self.assertTrue(self.app.browser_queue.paused)
         self.assertIn("Продолжить", ui.bulk_button.cget("text"))
         self.app.on_open_all_vacancies()
         self.assertEqual(self.app.browser_queue.opener.call_count, 2)
-        self.app.browser_queue.opener.assert_called_with("https://example.com/2")
+        self.app.browser_queue.opener.assert_called_with("https://example.com")
 
     def test_new_search_cancels_browser_queue(self):
         self.app.ui.add_result(self.row("First"))
@@ -140,6 +142,47 @@ class DesktopTests(unittest.TestCase):
         main.App._read_history_rows.assert_not_called()
         self.assertEqual(self.app.result_data, {})
         self.assertEqual(self.app.tree.get_children(), ())
+
+    def test_resume_restores_saved_matches_and_reviews_without_losing_visible_rows(self):
+        match = self.row("Saved match")
+        review = dict(self.row("Saved review", "REVIEW", None), url="https://example.com/review")
+        self.app.ui.add_result(match)
+        self.app.ui.filter.set("Нужно уточнить")
+        with patch.object(self.app, "_read_history_rows", return_value=[match, review]), \
+                patch.object(main, "Worker", return_value=Mock()):
+            self.app.btn_resume_history.invoke()
+        self.assertEqual(len(self.app.result_data), 2)
+        self.assertEqual(self.app.ui.filter.get(), "Нужно уточнить")
+        self.app.queue.put(("done", None))
+        self.app._poll_queue()
+        self.assertEqual(self.app.visible_vacancy_urls(), [review["url"]])
+        self.app.ui.filter.set("Подходящие")
+        self.assertEqual(self.app.visible_vacancy_urls(), [match["url"]])
+
+    def test_resume_with_only_new_results_does_not_restore_history(self):
+        self.app.ui.add_result(self.row("Previous match"))
+        with patch.object(self.app, "_read_history_rows") as history, \
+                patch.object(main, "Worker", return_value=Mock()) as worker:
+            self.app.btn_resume.invoke()
+            history.assert_not_called()
+        self.assertEqual(self.app.result_data, {})
+        self.assertTrue(worker.call_args.args[0]["resume_queue_only"])
+        self.assertTrue(self.app.btn_resume.instate(["disabled"]))
+        self.assertTrue(self.app.btn_resume_history.instate(["disabled"]))
+        self.app.queue.put(("done", None))
+        self.app._poll_queue()
+        self.assertFalse(self.app.btn_resume.instate(["disabled"]))
+        self.assertFalse(self.app.btn_resume_history.instate(["disabled"]))
+
+    def test_restore_results_without_search_is_repeatable(self):
+        saved = [self.row("Saved match"),
+                 dict(self.row("Saved review", "REVIEW", None), url="https://example.com/review")]
+        with patch.object(self.app, "_read_history_rows", return_value=saved), \
+                patch.object(main, "Worker") as worker:
+            self.app.on_restore_results()
+            self.app.on_restore_results()
+            worker.assert_not_called()
+        self.assertEqual(len(self.app.result_data), 2)
 
     def test_new_search_clears_hidden_rows_but_preserves_history(self):
         ui = self.app.ui
@@ -163,6 +206,19 @@ class DesktopTests(unittest.TestCase):
         ui.add_result(self.row("New match"))
         self.assertEqual(len(self.app.tree.get_children()), 1)
         self.assertEqual(next(iter(self.app.result_data.values()))["name"], "New match")
+
+    def test_bulk_review_and_reject_selection_and_reset(self):
+        ui=self.app.ui
+        for name, verdict, suitable, url in [('Good','MATCH',True,'1'),('Review','REVIEW',None,'2'),('No','REJECT',False,'3')]:
+            ui.add_result(dict(self.row(name,verdict,suitable),url='https://example.com/'+url))
+        self.app.browser_queue.opener=Mock(return_value=True)
+        ui.filter.set('Нужно уточнить')
+        self.app.on_open_all_vacancies()
+        self.app.browser_queue.opener.assert_called_once_with('https://example.com/2')
+        self.app.on_cancel_opening()
+        ui.filter.set('Отклонённые')
+        self.app.on_open_all_vacancies()
+        self.app.browser_queue.opener.assert_called_with('https://example.com/3')
 
 
 if __name__ == "__main__":

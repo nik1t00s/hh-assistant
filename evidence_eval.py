@@ -112,7 +112,7 @@ def requirement_items(source):
         heading = None
         if re.fullmatch(r'(?:будет (?:большим )?(?:плюсом|преимуществом)|преимуществом будет|плюсом|nice.to.have)', q):
             heading = 'optional'
-        elif re.match(r'^(?:(?:(?:наши|основные|обязательные|квалификационные) )?(?:требования|пожелания|ожидания)|что (?:мы )?(?:ожидаем|жд[её]м)|вам потребуется|наш кандидат|ты наш идеальный кандидат|какие знания и навыки|что (?:для нас )?важно|кого мы ищем|ожидаем от|идеальный кандидат|вы подходите|вы (?:нам )?подойд[её]те|для кандидатов|requirements)', q):
+        elif re.match(r'^(?:(?:(?:наши|основные|обязательные|квалификационные) )?(?:требования|пожелания|ожидания)|что (?:мы )?(?:ожидаем|жд[её]м)|вам потребуется|наш кандидат|ты наш идеальный кандидат|какие знания и навыки|что (?:для нас )?важно|кого мы ищем|нам важно|ожидаем от|идеальный кандидат|вы подходите|вы (?:нам )?подойд[её]те|для кандидатов|requirements)', q):
             heading = 'required'
         elif re.match(r'^кому.*не\s+подойд', q):
             heading = 'ineligible'
@@ -156,6 +156,12 @@ def experience_evidence(source):
         obligation = re.split(r',\s*желательно\s+в\b|\(\s*преимуществом\s+будет\s+опыт\s+в\b', q, maxsplit=1)[0]
         optional = section == 'optional' or bool(re.search(
             r'желател|приветству|будет.*(?:плюс|преимуществ)|не\s+обязател|не\s+требу|preferred|optional', obligation))
+        # Academic practice is not commercial employment. Keep separately stated
+        # commercial requirements: ambiguity must not silently erase a hard stop.
+        if (re.search(r'учебн|студенческ|курсов|дипломн', q)
+                and not re.search(r'коммерческ|профессиональн|аналогичн|\d+\s*(?:лет|год|месяц)', q)):
+            found.append(('optional' if optional else 'tools', quote))
+            continue
         role = bool(re.search(
             r'работали\s+(?:ассистент|проектн\w*\s+менеджер)|коммерческ|аналогичн|схож\w*\s+позици|на\s+позици|в\s+роли|'
             r'опыт\s+(?:работы\s*:?\s*)?(?:аналитик|инженер\w*\s+внедрен|ассистент|бизнес.ассистент|координатор|консультант|'
@@ -213,6 +219,93 @@ def salary_state(quote, minimum=40000):
     if re.search(r'\bот\b', text) and not re.search(r'\bдо\b', text):
         return 'unknown'
     return 'below'
+
+
+def learning_only_quote(quote, source):
+    """A promised learning outcome is not evidence of the employee's duties."""
+    learning = False
+    contexts = []
+    target = normalize(quote)
+    for line in source.splitlines():
+        text = line.strip().lower()
+        if re.match(r'(?:что (?:ты|вы) (?:узнаешь|узнаете|изучите|освоите)|чему (?:вы|ты) науч|чему (?:мы )?научим|вы научитесь)', text):
+            learning = True
+        elif re.match(r'(?:что (?:мы )?предлагаем|условия|требования|обязанности|задачи|чем предстоит|что (?:ты|вы) буд|вам предстоит|будет плюсом)', text):
+            learning = False
+        if target and target in normalize(line):
+            contexts.append(learning)
+    return bool(contexts) and all(contexts)
+
+
+def duty_lines(source):
+    active = False
+    for line in source.split('Описание:', 1)[-1].splitlines():
+        q = line.strip().lower().lstrip('-—• ')
+        if re.match(r'(?:ключевые задачи|основные задачи|обязанности|задачи|чем предстоит|что предстоит|что (?:ты|вы) буд)', q):
+            active = True
+        elif re.match(r'(?:требования|нам важно|что важно|кого мы ищем|что мы предлагаем|мы предлагаем|условия|что (?:ты|вы) узна|чему .*науч|будет плюсом|ожидания|навыки)', q):
+            active = False
+        elif active and q and not re.search(r'не (?:требуется|нужно)|без необходимости', q):
+            yield line.strip()
+
+
+def mixed_duty_evidence(source, role):
+    if role not in {'project', 'implementation', 'support', 'admin'}:
+        return []
+    duties = list(duty_lines(source))
+    groups = {
+        'моделирование процессов': r'(?:моделировани[ея]|описывать|описание и визуализация|рисовать схемы).*(?:процесс|bpmn)',
+        'постановка требований разработчикам': r'(?:формулировать|сбор|описывать).*(?:требовани|бизнес.потребност)|ставить задачи разработчикам',
+        'разработка автоматизаций': r'проектировать ai.агент|создавать прототипы автоматизац|писать.*python',
+        'построение инфраструктуры': r'(?:разработк|реализац).*локальн.*сет.*с нуля|построени.*отказоустойчив',
+        'преподавание': r'ведение педагогическ|преподавать|проводить уроки',
+    }
+    found = [(label, next((line for line in duties if re.search(pattern, line, re.I)), '')) for label, pattern in groups.items()]
+    found = [(label, line) for label, line in found if line]
+    # More than one distinct duty family is needed; mentioning a tool alone is not enough.
+    return found if len(found) >= 2 else []
+
+
+def scope_review_evidence(source):
+    """Flag explicit demands for clarification, without inferring seniority from a title."""
+    found = []
+    for section, quote in requirement_items(source):
+        if section != 'required' or learning_only_quote(quote, source):
+            continue
+        if re.search(r'желател|будет плюсом|преимуществ|не обязател|не требу', quote, re.I):
+            continue
+        if (re.search(r'англий|english', quote, re.I)
+                and re.search(r'\b[bв]2\b|\b[cс][12]\b|upper[ -]intermediate|advanced|fluent', quote, re.I)):
+            found.append(('обязательный уровень английского', quote))
+    duties = [q for q in duty_lines(source)
+              if not learning_only_quote(q, source)
+              and not re.search(r'помога|участи|под руководством|не нужно|не требуется', q, re.I)]
+    patterns = [
+        r'(?:нанимать|найм|формировать|формирование|собирать).*команд',
+        r'(?:руководить|руководство|возглавлять).*команд',
+        r'(?:управлять|управление).*бюджет.*продукт|(?:полностью вести|полное ведение).*жизненн.*цикл.*продукт',
+    ]
+    quotes = [next((q for q in duties if re.search(p, q, re.I)), '') for p in patterns]
+    if all(quotes):
+        found.append(('самостоятельный найм и руководство командой с ответственностью за продукт',
+                      ' / '.join(dict.fromkeys(quotes))))
+    return found
+
+
+def description_salary(source):
+    quotes = []
+    for line in source.split('Описание:', 1)[-1].splitlines():
+        q = line.strip()
+        if (re.match(r'^(?:[-—•]\s*)?(?:оплата\b|зарплата\b|заработная плата\b|зп\b|оклад\b)', q, re.I)
+                and re.search(r'\d', q) and re.search(r'руб|₽|\brub\b|\brur\b', q, re.I)
+                and not re.search(r'обучени|проезд|обед|курсов|компенсац', q, re.I)):
+            quotes.append(q)
+    return list(dict.fromkeys(quotes))
+
+
+def nonmandatory_condition(text):
+    return bool(re.search(r'не\s+(?:требу|обязател|предусмотр)|по\s+(?:вашему\s+)?желанию|'
+                          r'добровольн|без\s+(?:ночн|регулярн|частых|командиров|выезд|разъезд)', text, re.I))
 
 
 def verify_facts(data, source):
@@ -282,6 +375,8 @@ def verify_facts(data, source):
                 if value in {'project', 'implementation'} and re.search(r'системн\w*\s+аналитик', title):
                     # Participation in technical projects is not project coordination.
                     supported = False
+                if learning_only_quote(quote, source):
+                    supported = False
                 if value == 'data' and re.search(r'data\s+engineer|инженер\w*\s+по\s+данным', title):
                     # Engineering and report analysis have different entry requirements.
                     supported = False
@@ -294,11 +389,11 @@ def verify_facts(data, source):
                                  and re.search(r'моделир|описыва|описани|схем', q)
                                  and not re.search(r'не\s+(?:основн|требуется)|без\s+моделирован', q))
             elif key == 'night' and value == 'required':
-                supported = bool(re.search(r'ночн|\bночь\b', q) and not re.search(r'без\s+ноч|нет\s+ноч|не\s+предусмотр|ноч\w*\s+(?:смен\w*\s+)?не\s+(?:требу|предусмотр)', q))
+                supported = bool(re.search(r'ночн|\bночь\b', q) and not nonmandatory_condition(q) and not re.search(r'без\s+ноч|нет\s+ноч|не\s+предусмотр|ноч\w*\s+(?:смен\w*\s+)?не\s+(?:требу|предусмотр)', q))
             elif key == 'relocation' and value == 'required':
                 supported = bool(re.search(r'переезд|релокац', q) and not re.search(r'не\s+треб|без\s+переезд|помощь|возможн|или\s+уже\s+(?:наход|жив|прожив)|если\s+.*(?:не\s+жив|из\s+друг)', q))
             elif key == 'travel' and value == 'regular':
-                supported = bool(re.search(r'командиров|выезд|разъезд', q) and re.search(r'регуляр|часты|еженед|постоян|\d+\s*%', q))
+                supported = bool(re.search(r'командиров|выезд|разъезд', q) and re.search(r'регуляр|часты|еженед|постоян|\d+\s*%', q) and not nonmandatory_condition(q))
             elif key == 'contract' and value == 'no_tk':
                 supported = bool(re.search(r'самозанят|\bгпх\b|\bип\b|без\s+оформлен|не\s+оформляем', q)
                                  and not re.search(r'\bтк\b|трудов\w*\s+договор|срочн\w*\s+договор', q))
@@ -376,7 +471,7 @@ def verify_facts(data, source):
                 and not re.search(r'не\s+(?:нужен|требуется|ищем)', line, re.I)):
             verified['skills'] = dict(value='advanced', quote=line.strip())
             issues = [i for i in issues if not i.startswith('skills:')]
-        if re.search(r'разъездн\w*\s+(?:характер\s+)?работ', line, re.I) and not re.search(r'не\s+(?:предусмотр|требу)|без\s+разъезд|не\s+разъезд', line, re.I):
+        if re.search(r'разъездн\w*\s+(?:характер\s+)?работ', line, re.I) and not nonmandatory_condition(line) and not re.search(r'не\s+(?:предусмотр|требу)|без\s+разъезд|не\s+разъезд', line, re.I):
             verified['travel'] = dict(value='regular', quote=line.strip())
             issues = [i for i in issues if not i.startswith('travel:')]
             break
@@ -389,6 +484,15 @@ def verify_facts(data, source):
     if re.match(r'Должность:\s*(?:Руководитель|Начальник|Директор)\s+(?:центра|отдела|департамента|службы|управления)\b', title, re.I):
         verified['level'] = dict(value='senior', quote=title)
         issues = [issue for issue in issues if not issue.startswith('level:')]
+    for label, quote in mixed_duty_evidence(source, verified['role']['value']):
+        issues.append(f'mixed_role: доля задачи «{label}»: «{quote}»')
+    for label, quote in scope_review_evidence(source):
+        issues.append(f'role_scope: {label}: «{quote}»')
+    if verified['salary']['value'] == 'unknown':
+        salary_quotes = description_salary(source)
+        if len(salary_quotes) == 1:
+            verified['salary'] = dict(value='stated', quote=salary_quotes[0])
+            issues = [issue for issue in issues if not issue.startswith('salary:')]
     return verified, issues
 
 
@@ -428,7 +532,9 @@ def decide(facts, issues, policy=None):
     clarifications = []
     if value('skills') == 'working': clarifications.append('соответствие практических навыков: «' + facts['skills']['quote'] + '»')
     if policy['reject_contract'] and value('contract') == 'unknown': clarifications.append('оформление по ТК')
-    if salary == 'unknown': clarifications.append('зарплата на руки за месяц')
+    if salary == 'unknown':
+        salary_quote = facts['salary']['quote']
+        clarifications.append(('оплата указана: «' + salary_quote + '»; уточнить сумму на руки за месяц') if salary_quote else 'зарплата на руки за месяц')
     if policy['reject_travel'] and value('travel') == 'rare': questions.append('частота и длительность редких поездок')
     if value('skills') == 'advanced': questions.append('глубина необходимых навыков: «'+facts['skills']['quote']+'»')
     if value('role') == 'other': questions.append('соответствие роли карьерным направлениям')
@@ -437,14 +543,18 @@ def decide(facts, issues, policy=None):
                   'role':'содержание работы','skills':'уровень навыков','contract':'оформление',
                   'night':'ночные смены','relocation':'переезд','travel':'поездки','sales':'продажи',
                   'development':'разработка','bpmn':'моделирование процессов','salary':'зарплата'}
-        questions.extend('соответствие требуемого общего стажа вашему опыту' if 'общий стаж' in issue else
+        questions.extend(issue.split(': ', 1)[1] if issue.startswith(('mixed_role:', 'role_scope:')) else
+                         'соответствие требуемого общего стажа вашему опыту' if 'общий стаж' in issue else
                          labels.get(issue.split(':')[0],issue) + ' — вывод модели не подтверждён цитатой'
                          for issue in issues if issue.split(':')[0] not in {'contract', 'salary'})
     if questions:
-        return 'REVIEW', 0, direction, 'Нужно уточнить: ' + '; '.join(questions), resume
-    reserve = value('role') in {'support', 'admin', 'data', 'qa'}
+        return 'REVIEW', 0, direction, 'Нужно уточнить: ' + '; '.join(questions + clarifications), resume
+    preferred = policy.get('preferred_roles', ['project', 'implementation'])
+    reserve = value('role') not in preferred
     verdict, score = ('WEAK', 50) if reserve else ('MATCH', 65 if clarifications else 80)
-    reason = ('Запасное направление' if reserve else 'Проектное направление') + '. Задачи: «' + facts['role']['quote'] + '»'
+    if not reserve and 'preferred_roles' in policy:
+        score += max(0, 10 - 3 * preferred.index(value('role')))
+    reason = ('Запасное направление' if reserve else 'Основное направление') + '. Задачи: «' + facts['role']['quote'] + '»'
     if clarifications: reason += '. Уточнить у работодателя: ' + '; '.join(clarifications)
     return verdict, score, direction, reason, resume
 

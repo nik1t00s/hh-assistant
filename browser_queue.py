@@ -76,6 +76,12 @@ def suitable_urls(rows):
             if row.get("suitable") is True and row.get("verdict") in {"MATCH", "STRONG_MATCH", "WEAK"}]
 
 
+def visible_urls(rows):
+    """Open only the supplied visible rows, preserving grouped variants."""
+    return list(dict.fromkeys(url for group in rows for row in variants(group)
+                              if (url := canonical_url(row.get('url', '')))))
+
+
 class BrowserQueue:
     INTERVAL_MS = 20_000
     BATCH_SIZE = 50

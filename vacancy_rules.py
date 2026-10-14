@@ -69,6 +69,9 @@ def short_profile(profile):
         profile, re.IGNORECASE | re.DOTALL)
     if m:
         return m.group(1).strip()
+    summary = re.search(r"^##\s+Коротко\s*\n(.+?)(?=\n##|\Z)", profile, re.I | re.M | re.S)
+    if summary:
+        return summary.group(1).strip()
     return profile[:1500]
 
 
@@ -184,3 +187,36 @@ def word_hit(words, title):
         if re.search(pattern, title):
             return w
     return None
+
+
+def saved_hh_description(page_html):
+    """Identify a browser-saved vacancy by canonical metadata, never related links."""
+    from urllib.parse import urlsplit
+
+    class Metadata(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.urls = []
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if tag == 'link' and 'canonical' in attrs.get('rel', '').lower().split():
+                self.urls.append(attrs.get('href', ''))
+            if tag == 'meta' and attrs.get('property', '').lower() == 'og:url':
+                self.urls.append(attrs.get('content', ''))
+
+    parser = Metadata()
+    parser.feed(page_html)
+    ids = set()
+    for url in parser.urls:
+        parts = urlsplit(url)
+        host = parts.hostname or ''
+        match = re.fullmatch(r'/vacancy/([0-9]+)/?', parts.path)
+        if parts.scheme == 'https' and (host == 'hh.ru' or host.endswith('.hh.ru')) and match:
+            ids.add(match[1])
+    if len(ids) != 1:
+        raise ValueError('Не удалось однозначно определить вакансию HH. Сохраните страницу вакансии как HTML, не страницу поиска или входа.')
+    description = extract_jobposting_description(page_html)
+    if not description:
+        raise ValueError('В файле нет полного описания JobPosting. Дождитесь загрузки вакансии и сохраните страницу заново в формате HTML.')
+    return ids.pop(), description

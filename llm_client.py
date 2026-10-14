@@ -84,9 +84,16 @@ class StreamingLLMClient:
         self.stop_event = stop_event
 
     def list_models(self):
-        r = requests.get(f"{self.base_url}/models", timeout=10)
+        r = requests.get(f"{self.base_url}/models", timeout=10, **self._connection_options())
         r.raise_for_status()
         return [m["id"] for m in r.json().get("data", [])]
+
+    def _connection_options(self):
+        # Explicit empty proxies override HTTP(S)/ALL_PROXY for loopback only.
+        # Leave remote endpoints and the rest of the application unchanged.
+        if urlparse(self.base_url).hostname in {'localhost', '127.0.0.1', '::1'}:
+            return {'proxies': {'http': '', 'https': ''}}
+        return {}
 
     def check(self):
         """Проверяет связь с LM Studio и выбирает модель.
@@ -151,6 +158,7 @@ class StreamingLLMClient:
         with requests.post(
             f"{self.base_url}/chat/completions", json=payload,
             stream=True, timeout=(10, self.STALL_TIMEOUT),
+            **self._connection_options(),
         ) as r:
             if r.status_code != 200:
                 try:

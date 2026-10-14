@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,interactive-widget=resizes-content"><title>WORKAholic — поиск работы</title>
+<link rel="stylesheet" href="style.css"><link rel="stylesheet" href="apple.css"><link rel="stylesheet" href="career.css"><link rel="stylesheet" href="vacancies.css"><link rel="stylesheet" href="workspace.css"></head>
+<body>
+<a class="skip-link" href="#title">К содержимому</a>
+<aside class="sidebar"><a class="brand" href="#assistant" aria-label="WORKAholic — мой помощник">WORKAholic</a><nav data-navigation aria-label="Разделы"></nav></aside>
+<main>
+<header><button id="menu-toggle" class="secondary" aria-haspopup="dialog" aria-controls="mobile-menu" aria-expanded="false">☰ Меню</button><p class="demo-banner"><strong>Демо-режим.</strong> Примерные вакансии. Изменения сбрасываются при обновлении страницы.</p></header>
+<section class="heading"><div><h1 id="title" tabindex="-1">Мои вакансии</h1><p class="subtitle"></p></div></section>
+<section id="workspace">
+<div id="saved-empty" hidden></div>
+<div id="list-workspace">
+<div id="filter-toggle-row" hidden><button id="filter-toggle" class="secondary" aria-controls="filter-panel" aria-expanded="false">Поиск и фильтры</button><button id="clear-conditions" class="link-button" hidden>Сбросить условия</button></div>
+<div class="filters" id="filter-panel"><div class="tabs" role="group" aria-label="Оценка соответствия"><button data-filter="all">Все</button><button data-filter="match">Подходящие</button><button data-filter="review">Нужно уточнить</button><button data-filter="reject">Не подходят</button><button data-filter="unrated">Не оценено</button></div><label class="search" for="query"><span>Поиск по должности или компании</span><input id="query" placeholder="Например, координатор" type="search"></label></div>
+<p id="list-freshness" class="freshness-note" hidden>Оценки по предыдущим критериям</p>
+<p id="count" class="result-count" role="status"></p>
+<div class="workarea"><section id="list" aria-label="Список вакансий"></section><aside id="detail" aria-label="Подробности вакансии"></aside></div>
+</div></section><section id="extra" hidden></section>
+<details id="search-demo"><summary>Демо-сценарии</summary><div class="demo-controls"><p>Только проверка интерфейса. Поиск и загрузка данных не выполняются.</p><label>Состояние<select id="demo-state"><option value="ready">Подборка примеров</option><option value="unavailable">Поиск недоступен</option><option value="not-started">Поиск не запускался</option><option value="paused">Приостановлен</option><option value="processing">Длительная обработка</option><option value="complete">Завершён</option><option value="loading">Загрузка списка</option><option value="error">Ошибка загрузки</option><option value="empty">Завершён без результатов</option></select></label><label>Продолжение<select id="resume"><option>С прежними результатами</option><option>Только новые результаты</option></select></label><button id="demo-resume" class="secondary">Показать продолжение</button><button id="batch" class="secondary">Как открываются пачки</button><p id="status" role="status">Подборка примеров</p></div></details>
+</main>
+<dialog id="mobile-menu" aria-labelledby="menu-title"><div class="dialog-heading"><h2 id="menu-title">Разделы WORKAholic</h2><button id="menu-close" class="secondary" aria-label="Закрыть меню">✕</button></div><nav data-navigation aria-label="Мобильная навигация"></nav></dialog>
+<dialog id="criteria-dialog" aria-labelledby="criteria-title"></dialog>
+<dialog id="dialog" aria-labelledby="batch-title"><button class="close" aria-label="Закрыть">×</button><h2 id="batch-title">Просмотр без сотни вкладок</h2><p>В рабочем приложении вакансии открываются пачками по 50, с интервалом 20 секунд. Следующая пачка — когда ты готов.</p><p>В этом демо реальные сайты не открываются.</p><button class="primary close-dialog">Понятно</button></dialog>
+<div id="toast" role="status"></div>
+<script src="app.js"></script><script src="ui-state.js"></script><script src="vacancy-view.js"></script><script src="career.js"></script>
+</body></html>
